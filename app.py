@@ -485,32 +485,44 @@ def api_campaign():
         # 只保留三大核心渠道
         rows = [r for r in rows if r["channel"] in KEY_CH]
 
-        # ★ 注入 Facebook Campaign 真实消耗（严格精确匹配，避免子串误匹配）
+        # ★ 注入 Facebook Campaign 真实消耗（严格精确匹配；installs=0 则消耗强制置0）
         fb_camp_spend = fetch_fb_campaign_spend(period)
         for r in rows:
             if r["channel"] == "Facebook":
                 camp_name = r.get("campaign", "")
-                if camp_name in fb_camp_spend:
+                installs  = r.get("installs") or 0
+                if installs == 0:
+                    r["cost"] = 0.0
+                    r["cps"]  = None
+                elif camp_name in fb_camp_spend:
                     r["cost"] = fb_camp_spend[camp_name]
                     loan = r.get("loan") or 0
                     r["cps"] = round(r["cost"] / loan, 2) if loan > 0 and r["cost"] > 0 else None
 
-        # ★ 注入 TikTok Campaign 真实消耗（严格精确匹配）
+        # ★ 注入 TikTok Campaign 真实消耗（严格精确匹配；installs=0 则消耗强制置0）
         tt_camp_spend = fetch_tt_campaign_spend(period)
         for r in rows:
             if r["channel"] == "TikTok for Business":
                 camp_name = r.get("campaign", "")
-                if camp_name in tt_camp_spend:
+                installs  = r.get("installs") or 0
+                if installs == 0:
+                    r["cost"] = 0.0
+                    r["cps"]  = None
+                elif camp_name in tt_camp_spend:
                     r["cost"] = tt_camp_spend[camp_name]
                     loan = r.get("loan") or 0
                     r["cps"] = round(r["cost"] / loan, 2) if loan > 0 and r["cost"] > 0 else None
 
-        # ★ 注入 Google Ads Campaign 真实消耗（严格精确匹配）
+        # ★ 注入 Google Ads Campaign 真实消耗（严格精确匹配；installs=0 则消耗强制置0）
         gg_camp_spend = fetch_gg_campaign_spend(period)
         for r in rows:
             if r["channel"] == "Google Ads":
                 camp_name = r.get("campaign", "")
-                if camp_name in gg_camp_spend:
+                installs  = r.get("installs") or 0
+                if installs == 0:
+                    r["cost"] = 0.0
+                    r["cps"]  = None
+                elif camp_name in gg_camp_spend:
                     r["cost"] = gg_camp_spend[camp_name]
                     loan = r.get("loan") or 0
                     r["cps"] = round(r["cost"] / loan, 2) if loan > 0 and r["cost"] > 0 else None

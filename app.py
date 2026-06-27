@@ -485,50 +485,35 @@ def api_campaign():
         # 只保留三大核心渠道
         rows = [r for r in rows if r["channel"] in KEY_CH]
 
-        # ★ 注入 Facebook Campaign 真实消耗
+        # ★ 注入 Facebook Campaign 真实消耗（严格精确匹配，避免子串误匹配）
         fb_camp_spend = fetch_fb_campaign_spend(period)
         for r in rows:
             if r["channel"] == "Facebook":
                 camp_name = r.get("campaign", "")
                 if camp_name in fb_camp_spend:
                     r["cost"] = fb_camp_spend[camp_name]
-                else:
-                    for fb_name, fb_spend in fb_camp_spend.items():
-                        if camp_name and (camp_name in fb_name or fb_name.startswith(camp_name[:20])):
-                            r["cost"] = fb_spend
-                            break
-                loan = r.get("loan") or 0
-                r["cps"] = round(r["cost"] / loan, 2) if loan > 0 and r["cost"] > 0 else None
+                    loan = r.get("loan") or 0
+                    r["cps"] = round(r["cost"] / loan, 2) if loan > 0 and r["cost"] > 0 else None
 
-        # ★ 注入 TikTok Campaign 真实消耗
+        # ★ 注入 TikTok Campaign 真实消耗（严格精确匹配）
         tt_camp_spend = fetch_tt_campaign_spend(period)
         for r in rows:
             if r["channel"] == "TikTok for Business":
                 camp_name = r.get("campaign", "")
                 if camp_name in tt_camp_spend:
                     r["cost"] = tt_camp_spend[camp_name]
-                else:
-                    for tt_name, tt_spend in tt_camp_spend.items():
-                        if camp_name and (camp_name in tt_name or tt_name.startswith(camp_name[:20])):
-                            r["cost"] = tt_spend
-                            break
-                loan = r.get("loan") or 0
-                r["cps"] = round(r["cost"] / loan, 2) if loan > 0 and r["cost"] > 0 else None
+                    loan = r.get("loan") or 0
+                    r["cps"] = round(r["cost"] / loan, 2) if loan > 0 and r["cost"] > 0 else None
 
-        # ★ 注入 Google Ads Campaign 真实消耗
+        # ★ 注入 Google Ads Campaign 真实消耗（严格精确匹配）
         gg_camp_spend = fetch_gg_campaign_spend(period)
         for r in rows:
             if r["channel"] == "Google Ads":
                 camp_name = r.get("campaign", "")
                 if camp_name in gg_camp_spend:
                     r["cost"] = gg_camp_spend[camp_name]
-                else:
-                    for gg_name, gg_spend in gg_camp_spend.items():
-                        if camp_name and (camp_name in gg_name or gg_name.startswith(camp_name[:20])):
-                            r["cost"] = gg_spend
-                            break
-                loan = r.get("loan") or 0
-                r["cps"] = round(r["cost"] / loan, 2) if loan > 0 and r["cost"] > 0 else None
+                    loan = r.get("loan") or 0
+                    r["cps"] = round(r["cost"] / loan, 2) if loan > 0 and r["cost"] > 0 else None
 
         ch_order = {ch: i for i, ch in enumerate(KEY_CH)}
         rows.sort(key=lambda x: (ch_order.get(x["channel"], 99), -(x.get("cost") or 0)))

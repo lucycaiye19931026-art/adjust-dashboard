@@ -2,16 +2,19 @@
 Adjust PH_lucy 数据看板 — Web 服务
 支持 Channel 看板 + Campaign 看板
 Facebook 消耗来自 Meta Ads API（真实数据）
+TikTok 消耗来自 TikTok Ads API（真实数据）
+Google Ads 消耗来自 Google Ads API v24（直连，真实数据）
 """
 import re
+import os
 import json as _json
 import requests
 from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, request, Response
 
 # ── Adjust 配置 ───────────────────────────────────────────
-APP_TOKEN  = "g0ylloj1w54w"
-USER_TOKEN = "g9gJyYMyUN41vFeaR5QW"
+APP_TOKEN  = os.environ.get("ADJUST_APP_TOKEN",  "g0ylloj1w54w")
+USER_TOKEN = os.environ.get("ADJUST_USER_TOKEN", "g9gJyYMyUN41vFeaR5QW")
 BASE_URL   = "https://automate.adjust.com/reports-service/report"
 HEADERS    = {"Authorization": f"Bearer {USER_TOKEN}"}
 KEY_CH     = ["Google Ads", "Facebook", "TikTok for Business"]
@@ -28,15 +31,15 @@ CPS_FIXED = {
 }
 
 # ── Facebook Ads API 配置 ─────────────────────────────────
-FB_LONG_TOKEN = "EAA1KZAII87qIBR9kq8wdaXEIDyZCiqHc4xHYYMieFZCzBUgmjZBZAaAQzhcoUmpo3U3uRpD0WEX7rTZC7wlS7HEB0rTG5SYHDfmF98f1ZB1qnO3ZA8CO9ZBNDlNZCsztuRCl7Vi8Vf9ztRo7sLCensZBtfNslQLDMlvadhwaKKoQ0gZCyf3lJqn8ttrJjMICBgdE"
-FB_APP_ID     = "3740970239454882"
-FB_APP_SECRET = "7fe82494a405395f641940e7b213204a"
+FB_LONG_TOKEN = os.environ.get("FB_LONG_TOKEN", "")
+FB_APP_ID     = os.environ.get("FB_APP_ID",     "3740970239454882")
+FB_APP_SECRET = os.environ.get("FB_APP_SECRET", "")
 FB_ACT_IDS    = ["act_2043458276522117", "act_1338744840870824", "act_554870820824463"]
 FB_BASE       = "https://graph.facebook.com/v19.0"
 
 # ── TikTok Ads API 配置 ───────────────────────────────────
-TT_ACCESS_TOKEN = "2ff98715ed3d787549d4b9cf324de4ef97791ef4"
-TT_ADV_ID       = "7358007483270692880"
+TT_ACCESS_TOKEN = os.environ.get("TT_ACCESS_TOKEN", "")
+TT_ADV_ID       = os.environ.get("TT_ADV_ID",       "7358007483270692880")
 TT_BASE         = "https://business-api.tiktok.com/open_api/v1.3"
 
 BASE_PARAMS = {
@@ -178,6 +181,123 @@ def fetch_tt_campaign_spend(period):
         pass
     return camp_spend
 
+# ── Google Ads 消耗（直连 Google Ads API v24）────────────
+GG_CLIENT_ID       = os.environ.get("GG_CLIENT_ID",      "")
+GG_CLIENT_SECRET   = os.environ.get("GG_CLIENT_SECRET",  "")
+GG_REFRESH_TOKEN   = os.environ.get("GG_REFRESH_TOKEN",  "")
+GG_DEVELOPER_TOKEN = os.environ.get("GG_DEVELOPER_TOKEN","")
+GG_MCC_ID          = os.environ.get("GG_MCC_ID",         "1620959437")
+GG_CUSTOMER_IDS    = ["3375325268", "4223410058"]   # 337-532-5268 + 422-341-0058
+GG_API_VER         = "v24"
+
+_gg_token_cache  = {"token": "", "ts": 0}
+_gg_spend_cache  = {"data": {}, "ts": 0}   # 60秒内不重复请求
+
+def _gg_get_access_token():
+    """获取 Google OAuth2 Access Token（缓存3500秒）"""
+    import time
+    now = time.time()
+    if _gg_token_cache["token"] and now - _gg_token_cache["ts"] < 3500:
+        return _gg_token_cache["token"]
+    try:
+        r = requests.post("https://oauth2.googleapis.com/token", data={
+            "client_id":     GG_CLIENT_ID,
+            "client_secret": GG_CLIENT_SECRET,
+            "refresh_token": GG_REFRESH_TOKEN,
+            "grant_type":    "refresh_token",
+        }, timeout=10)
+        token = r.json().get("access_token", "")
+        if token:
+            _gg_token_cache["token"] = token
+            _gg_token_cache["ts"]    = now
+        return token
+    except Exception:
+        return ""
+
+def _gg_date_range(period):
+    t  = now8()
+    td = t.strftime("%Y-%m-%d")
+    yd = (t - timedelta(days=1)).strftime("%Y-%m-%d")
+    ranges = {
+        "today":     (td, td),
+        "yesterday": (yd, yd),
+        "3days":     ((t - timedelta(days=2)).strftime("%Y-%m-%d"), td),
+        "7days":     ((t - timedelta(days=6)).strftime("%Y-%m-%d"), td),
+        "month":     (t.replace(day=1).strftime("%Y-%m-%d"), td),
+    }
+    return ranges.get(period, (td, td))
+
+def _gg_query(query_str):
+    """对所有 Customer ID 执行 GAQL 查询，合并返回 results 列表；失败返回 []"""
+    token = _gg_get_access_token()
+    if not token:
+        return []
+    headers = {
+        "Authorization":     f"Bearer {token}",
+        "developer-token":   GG_DEVELOPER_TOKEN,
+        "login-customer-id": GG_MCC_ID,
+        "Content-Type":      "application/json",
+    }
+    all_results = []
+    for cid in GG_CUSTOMER_IDS:
+        url = f"https://googleads.googleapis.com/{GG_API_VER}/customers/{cid}/googleAds:search"
+        try:
+            resp = requests.post(url, headers=headers,
+                                 json={"query": query_str}, timeout=15)
+            if resp.status_code == 200:
+                all_results.extend(resp.json().get("results", []))
+        except Exception:
+            pass
+    return all_results
+
+def fetch_gg_spend(period):
+    """拉取 Google Ads 总消耗（用于 Channel 看板）"""
+    import time
+    now = time.time()
+    cache_key = f"spend_{period}"
+    if _gg_spend_cache["data"].get(cache_key) and now - _gg_spend_cache["ts"] < 60:
+        return _gg_spend_cache["data"][cache_key]
+
+    since, until = _gg_date_range(period)
+    query = f"""
+        SELECT metrics.cost_micros
+        FROM campaign
+        WHERE segments.date BETWEEN '{since}' AND '{until}'
+          AND metrics.cost_micros > 0
+    """
+    rows = _gg_query(query)
+    total = round(sum(int(r.get("metrics", {}).get("costMicros", 0)) / 1e6 for r in rows), 2)
+    _gg_spend_cache["data"][cache_key] = total
+    _gg_spend_cache["ts"] = now
+    return total
+
+def fetch_gg_campaign_spend(period):
+    """拉取 Google Ads Campaign 级消耗，返回 {campaign_name: spend}"""
+    import time
+    now = time.time()
+    cache_key = f"camp_{period}"
+    if _gg_spend_cache["data"].get(cache_key) and now - _gg_spend_cache["ts"] < 60:
+        return _gg_spend_cache["data"][cache_key]
+
+    since, until = _gg_date_range(period)
+    query = f"""
+        SELECT campaign.name, metrics.cost_micros
+        FROM campaign
+        WHERE segments.date BETWEEN '{since}' AND '{until}'
+          AND metrics.cost_micros > 0
+        ORDER BY metrics.cost_micros DESC
+    """
+    rows = _gg_query(query)
+    result = {}
+    for row in rows:
+        name  = row.get("campaign", {}).get("name", "")
+        spend = int(row.get("metrics", {}).get("costMicros", 0)) / 1e6
+        if name:
+            result[name] = round(result.get(name, 0) + spend, 2)
+    _gg_spend_cache["data"][cache_key] = result
+    _gg_spend_cache["ts"] = now
+    return result
+
 def date_range(period):
     t  = now8()
     td = t.strftime("%Y-%m-%d")
@@ -302,6 +422,17 @@ def api_channel():
                 r["cps"]       = round(tt_real_spend / loan, 2) if loan > 0 else None
                 r["cps_fixed"] = False
 
+        # ★ 注入 Google Ads 真实消耗（Google Ads API v24）
+        gg_real_spend = fetch_gg_spend(period)
+        if gg_real_spend > 0:
+            for r in rows:
+                if r["channel"] == "Google Ads":
+                    r["cost"]         = gg_real_spend
+                    r["cost_formula"] = "GG API"
+                    loan = r.get("loan") or 0
+                    r["cps"]       = round(gg_real_spend / loan, 2) if loan > 0 else None
+                    r["cps_fixed"] = False
+
         rows.sort(key=lambda x: (0 if x["is_key"] else 1, -(x.get("cost") or 0)))
 
         # 重算 total
@@ -395,13 +526,16 @@ def api_campaign():
                 ch_totals[ch] = {"clicks":0,"installs":0,"cost":0,"register":0,"apply":0,"loan":0,"revenue":0}
             for f in ("clicks","installs","cost","register","apply","loan","revenue"):
                 ch_totals[ch][f] = round(ch_totals[ch][f] + (r.get(f) or 0), 2)
-        # ★ Facebook + TikTok channel 小计 cost 用真实消耗替换
+        # ★ Facebook + TikTok + Google Ads channel 小计 cost 用真实消耗替换
         fb_channel_spend = fetch_fb_channel_spend(period)
         tt_channel_spend = fetch_tt_channel_spend(period)
+        gg_channel_spend = fetch_gg_spend(period)
         if "Facebook" in ch_totals:
             ch_totals["Facebook"]["cost"] = fb_channel_spend
         if "TikTok for Business" in ch_totals:
             ch_totals["TikTok for Business"]["cost"] = tt_channel_spend
+        if "Google Ads" in ch_totals and gg_channel_spend > 0:
+            ch_totals["Google Ads"]["cost"] = gg_channel_spend
         for ch in ch_totals:
             tl = ch_totals[ch]["loan"]
             tc = ch_totals[ch]["cost"]

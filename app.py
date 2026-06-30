@@ -1,6 +1,6 @@
 """
 Adjust PH_lucy 数据看板 — Web 服务
-支持 Channel 看板 + Campaign 看板
+支持 Android Channel/Campaign 看板 + iOS Channel/Campaign 看板
 Facebook 消耗来自 Meta Ads API（真实数据）
 TikTok 消耗来自 TikTok Ads API（真实数据）
 Google Ads 消耗来自 Google Ads API v24（直连，真实数据）
@@ -41,6 +41,12 @@ FB_BASE       = "https://graph.facebook.com/v19.0"
 TT_ACCESS_TOKEN = os.environ.get("TT_ACCESS_TOKEN", "")
 TT_ADV_ID       = os.environ.get("TT_ADV_ID",       "7358007483270692880")
 TT_BASE         = "https://business-api.tiktok.com/open_api/v1.3"
+
+# ── iOS 专属配置 ──────────────────────────────────────────
+IOS_APP_TOKEN   = os.environ.get("IOS_ADJUST_APP_TOKEN", "du1u32cgaigw")
+IOS_KEY_CH      = ["Facebook", "TikTok for Business", "Apple"]
+FB_IOS_ACT_IDS  = ["act_826668223504196", "act_485941130935481"]
+TT_IOS_ADV_ID   = os.environ.get("TT_IOS_ADV_ID", "7358007484973563921")
 
 BASE_PARAMS = {
     "metrics":            "attribution_clicks,installs,cost,register_success_events,apply_for_loan_events,loan_success_events,first_loan_amount_revenue",
@@ -161,6 +167,85 @@ def fetch_tt_campaign_spend(period):
                          headers={"Access-Token": TT_ACCESS_TOKEN}, timeout=30,
                          params={
                              "advertiser_id": TT_ADV_ID,
+                             "report_type":   "BASIC",
+                             "data_level":    "AUCTION_CAMPAIGN",
+                             "dimensions":    _json.dumps(["campaign_id"]),
+                             "metrics":       _json.dumps(["campaign_name", "spend"]),
+                             "start_date":    since,
+                             "end_date":      until,
+                             "page_size":     100,
+                         })
+        d = r.json()
+        if d.get("code") == 0:
+            for row in d.get("data", {}).get("list", []):
+                m     = row.get("metrics", {})
+                name  = m.get("campaign_name", "")
+                spend = float(m.get("spend", 0) or 0)
+                if name:
+                    camp_spend[name] = round(camp_spend.get(name, 0) + spend, 2)
+    except Exception:
+        pass
+    return camp_spend
+
+# ── iOS 专属 API 拉取函数 ─────────────────────────────────
+
+def fetch_fb_ios_channel_spend(period):
+    """拉取 Facebook iOS 账户总消耗"""
+    since, until = fb_date_range(period)
+    token = get_fb_token()
+    total_spend = 0.0
+    for act_id in FB_IOS_ACT_IDS:
+        try:
+            r = requests.get(f"{FB_BASE}/{act_id}/insights", timeout=30, params={
+                "access_token": token,
+                "fields":       "spend",
+                "time_range":   _json.dumps({"since": since, "until": until}),
+                "level":        "account",
+            })
+            if r.status_code == 200:
+                data = r.json().get("data", [])
+                total_spend += float(data[0].get("spend", 0)) if data else 0
+        except Exception:
+            pass
+    return round(total_spend, 2)
+
+def fetch_fb_ios_campaign_spend(period):
+    """拉取 Facebook iOS Campaign 级消耗，返回 {campaign_name: spend}"""
+    since, until = fb_date_range(period)
+    token = get_fb_token()
+    camp_spend = {}
+    for act_id in FB_IOS_ACT_IDS:
+        try:
+            r = requests.get(f"{FB_BASE}/{act_id}/insights", timeout=30, params={
+                "access_token": token,
+                "fields":       "campaign_name,spend",
+                "time_range":   _json.dumps({"since": since, "until": until}),
+                "level":        "campaign",
+                "limit":        100,
+            })
+            if r.status_code == 200:
+                for row in r.json().get("data", []):
+                    name  = row.get("campaign_name", "")
+                    spend = float(row.get("spend", 0))
+                    camp_spend[name] = round(camp_spend.get(name, 0) + spend, 2)
+        except Exception:
+            pass
+    return camp_spend
+
+def fetch_tt_ios_channel_spend(period):
+    """拉取 TikTok iOS 账户总消耗"""
+    camp_spend = fetch_tt_ios_campaign_spend(period)
+    return round(sum(camp_spend.values()), 2)
+
+def fetch_tt_ios_campaign_spend(period):
+    """拉取 TikTok iOS Campaign 级消耗，返回 {campaign_name: spend}"""
+    since, until = tt_date_range(period)
+    camp_spend = {}
+    try:
+        r = requests.get(f"{TT_BASE}/report/integrated/get/",
+                         headers={"Access-Token": TT_ACCESS_TOKEN}, timeout=30,
+                         params={
+                             "advertiser_id": TT_IOS_ADV_ID,
                              "report_type":   "BASIC",
                              "data_level":    "AUCTION_CAMPAIGN",
                              "dimensions":    _json.dumps(["campaign_id"]),
@@ -576,6 +661,174 @@ def api_campaign():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+# ── iOS API 路由 ──────────────────────────────────────────
+
+@app.route("/api/ios/channel")
+def api_ios_channel():
+    period = request.args.get("period", "today")
+    start, end = date_range(period)
+    dims = "channel,day" if has_day(period) else "channel"
+    try:
+        resp = requests.get(BASE_URL, headers={"Authorization": f"Bearer {USER_TOKEN}"},
+                            timeout=55, params={
+                                "app_token__in": IOS_APP_TOKEN,
+                                "date_period":   f"{start}:{end}",
+                                "dimensions":    dims,
+                                **BASE_PARAMS,
+                            })
+        resp.raise_for_status()
+        raw  = resp.json()
+        rows = parse_rows(raw.get("rows", []), "channel")
+        for r in rows:
+            apply_formula(r)
+
+        # 注入 Facebook iOS 真实消耗
+        fb_ios_spend = fetch_fb_ios_channel_spend(period)
+        for r in rows:
+            if r["channel"] == "Facebook":
+                r["cost"] = fb_ios_spend
+                r["cost_formula"] = "Meta API"
+                loan = r.get("loan") or 0
+                r["cps"] = round(fb_ios_spend / loan, 2) if loan > 0 else None
+                r["cps_fixed"] = False
+
+        # 注入 TikTok iOS 真实消耗
+        tt_ios_spend = fetch_tt_ios_channel_spend(period)
+        for r in rows:
+            if r["channel"] == "TikTok for Business":
+                r["cost"] = tt_ios_spend
+                r["cost_formula"] = "TikTok API"
+                loan = r.get("loan") or 0
+                r["cps"] = round(tt_ios_spend / loan, 2) if loan > 0 else None
+                r["cps_fixed"] = False
+
+        rows.sort(key=lambda x: (0 if x["channel"] in IOS_KEY_CH else 1, -(x.get("cost") or 0)))
+
+        # 汇总
+        seen = {}
+        for r in rows:
+            ch = r["channel"]
+            if ch not in seen: seen[ch] = dict(r)
+            else:
+                for f in ("clicks","installs","cost","register","apply","loan","revenue"):
+                    seen[ch][f] = round((seen[ch].get(f) or 0) + (r.get(f) or 0), 2)
+        tc = round(sum(v.get("cost",0) for ch,v in seen.items() if ch in IOS_KEY_CH), 2)
+        tl = sum(int(v.get("loan",0)) for ch,v in seen.items() if ch in IOS_KEY_CH)
+        total = {
+            "clicks":   sum(int(v.get("clicks",0))   for ch,v in seen.items() if ch in IOS_KEY_CH),
+            "installs": sum(int(v.get("installs",0)) for ch,v in seen.items() if ch in IOS_KEY_CH),
+            "cost":     tc,
+            "register": sum(int(v.get("register",0)) for ch,v in seen.items() if ch in IOS_KEY_CH),
+            "apply":    sum(int(v.get("apply",0))    for ch,v in seen.items() if ch in IOS_KEY_CH),
+            "loan":     tl,
+            "revenue":  round(sum(v.get("revenue",0) for ch,v in seen.items() if ch in IOS_KEY_CH), 2),
+            "cps":      round(tc/tl, 2) if tl > 0 else None,
+        }
+        return jsonify({
+            "ok": True, "period": period, "start": start, "end": end,
+            "has_day": has_day(period),
+            "pulled_at": now8().strftime("%Y-%m-%d %H:%M:%S"),
+            "total": total, "by_channel": rows,
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/ios/campaign")
+def api_ios_campaign():
+    period = request.args.get("period", "yesterday")
+    start, end = date_range(period)
+    dims = "channel,campaign,day" if has_day(period) else "channel,campaign"
+    try:
+        resp = requests.get(BASE_URL, headers={"Authorization": f"Bearer {USER_TOKEN}"},
+                            timeout=55, params={
+                                "app_token__in": IOS_APP_TOKEN,
+                                "date_period":   f"{start}:{end}",
+                                "dimensions":    dims,
+                                **BASE_PARAMS,
+                            })
+        resp.raise_for_status()
+        raw  = resp.json()
+        rows = parse_rows(raw.get("rows", []), "campaign")
+
+        # 只保留核心渠道
+        rows = [r for r in rows if r["channel"] in IOS_KEY_CH]
+
+        # 注入 Facebook iOS Campaign 真实消耗（installs=0 置0）
+        fb_ios_camp = fetch_fb_ios_campaign_spend(period)
+        for r in rows:
+            if r["channel"] == "Facebook":
+                installs = r.get("installs") or 0
+                if installs == 0:
+                    r["cost"] = 0.0; r["cps"] = None
+                elif r.get("campaign","") in fb_ios_camp:
+                    r["cost"] = fb_ios_camp[r["campaign"]]
+                    loan = r.get("loan") or 0
+                    r["cps"] = round(r["cost"] / loan, 2) if loan > 0 and r["cost"] > 0 else None
+
+        # 注入 TikTok iOS Campaign 真实消耗（installs=0 置0）
+        tt_ios_camp = fetch_tt_ios_campaign_spend(period)
+        for r in rows:
+            if r["channel"] == "TikTok for Business":
+                installs = r.get("installs") or 0
+                if installs == 0:
+                    r["cost"] = 0.0; r["cps"] = None
+                elif r.get("campaign","") in tt_ios_camp:
+                    r["cost"] = tt_ios_camp[r["campaign"]]
+                    loan = r.get("loan") or 0
+                    r["cps"] = round(r["cost"] / loan, 2) if loan > 0 and r["cost"] > 0 else None
+
+        # Google/ASA：installs=0 置0，其余保留 Adjust 归因消耗
+        for r in rows:
+            if r["channel"] in ("Google Ads", "Apple"):
+                if (r.get("installs") or 0) == 0:
+                    r["cost"] = 0.0; r["cps"] = None
+
+        ch_order = {ch: i for i, ch in enumerate(IOS_KEY_CH)}
+        rows.sort(key=lambda x: (ch_order.get(x["channel"], 99), -(x.get("cost") or 0)))
+
+        # 渠道小计
+        ch_totals = {}
+        for r in rows:
+            ch = r["channel"]
+            if ch not in ch_totals:
+                ch_totals[ch] = {"clicks":0,"installs":0,"cost":0,"register":0,"apply":0,"loan":0,"revenue":0}
+            for f in ("clicks","installs","cost","register","apply","loan","revenue"):
+                ch_totals[ch][f] = round(ch_totals[ch][f] + (r.get(f) or 0), 2)
+        # channel 小计 cost 用真实消耗替换
+        fb_ios_ch  = fetch_fb_ios_channel_spend(period)
+        tt_ios_ch  = fetch_tt_ios_channel_spend(period)
+        if "Facebook" in ch_totals:
+            ch_totals["Facebook"]["cost"] = fb_ios_ch
+        if "TikTok for Business" in ch_totals:
+            ch_totals["TikTok for Business"]["cost"] = tt_ios_ch
+        for ch in ch_totals:
+            tl = ch_totals[ch]["loan"]
+            tc = ch_totals[ch]["cost"]
+            ch_totals[ch]["cps"] = round(tc/tl, 2) if tl > 0 else None
+
+        key_cost = sum(ch_totals.get(ch,{}).get("cost",0) for ch in IOS_KEY_CH)
+        key_loan = sum(ch_totals.get(ch,{}).get("loan",0) for ch in IOS_KEY_CH)
+        total = {
+            "clicks":   sum(ch_totals.get(ch,{}).get("clicks",0)   for ch in IOS_KEY_CH),
+            "installs": sum(ch_totals.get(ch,{}).get("installs",0) for ch in IOS_KEY_CH),
+            "cost":     round(key_cost, 2),
+            "register": sum(ch_totals.get(ch,{}).get("register",0) for ch in IOS_KEY_CH),
+            "apply":    sum(ch_totals.get(ch,{}).get("apply",0)    for ch in IOS_KEY_CH),
+            "loan":     key_loan,
+            "revenue":  round(sum(ch_totals.get(ch,{}).get("revenue",0) for ch in IOS_KEY_CH), 2),
+            "cps":      round(key_cost/key_loan, 2) if key_loan > 0 else None,
+        }
+        return jsonify({
+            "ok": True, "period": period, "start": start, "end": end,
+            "has_day": has_day(period),
+            "pulled_at": now8().strftime("%Y-%m-%d %H:%M:%S"),
+            "total": total, "channel_totals": ch_totals, "by_campaign": rows,
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route("/")
 def index():
     return Response(CHANNEL_HTML, mimetype="text/html")
@@ -584,10 +837,20 @@ def index():
 def campaign_page():
     return Response(CAMPAIGN_HTML, mimetype="text/html")
 
+@app.route("/ios")
+def ios_channel_page():
+    return Response(IOS_CHANNEL_HTML, mimetype="text/html")
+
+@app.route("/ios/campaign")
+def ios_campaign_page():
+    return Response(IOS_CAMPAIGN_HTML, mimetype="text/html")
+
 # ── 前端页面（内嵌 HTML）────────────────────────────────
 
-CHANNEL_HTML = open("channel.html", encoding="utf-8").read() if __import__("os").path.exists("channel.html") else "<h1>channel.html not found</h1>"
-CAMPAIGN_HTML = open("campaign.html", encoding="utf-8").read() if __import__("os").path.exists("campaign.html") else "<h1>campaign.html not found</h1>"
+CHANNEL_HTML     = open("channel.html",     encoding="utf-8").read() if __import__("os").path.exists("channel.html")     else "<h1>channel.html not found</h1>"
+CAMPAIGN_HTML    = open("campaign.html",    encoding="utf-8").read() if __import__("os").path.exists("campaign.html")    else "<h1>campaign.html not found</h1>"
+IOS_CHANNEL_HTML  = open("ios_channel.html",  encoding="utf-8").read() if __import__("os").path.exists("ios_channel.html")  else "<h1>ios_channel.html not found</h1>"
+IOS_CAMPAIGN_HTML = open("ios_campaign.html", encoding="utf-8").read() if __import__("os").path.exists("ios_campaign.html") else "<h1>ios_campaign.html not found</h1>"
 
 if __name__ == "__main__":
     import argparse

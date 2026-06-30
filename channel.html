@@ -7,22 +7,33 @@
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Segoe UI',system-ui,sans-serif;background:#0d0d1a;color:#e0e0e0;min-height:100vh}
-header{background:linear-gradient(135deg,#1a1a2e,#16213e);padding:18px 28px;border-bottom:2px solid #2d3561;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px}
-header h1{font-size:1.25rem;color:#fff}
-header p{font-size:.76rem;color:#8888aa;margin-top:4px}
-.nav-link{padding:7px 16px;border-radius:8px;background:#1e1e38;color:#aaa;text-decoration:none;font-size:.82rem;border:1px solid #2d3561;transition:all .18s}
-.nav-link:hover,.nav-link.active{background:#e94560;color:#fff;border-color:#e94560}
-.filter-bar{display:flex;gap:9px;padding:13px 28px;background:#111128;border-bottom:1px solid #1e1e38;flex-wrap:wrap;align-items:center}
+header{background:linear-gradient(135deg,#1a1a2e,#16213e);padding:16px 28px;border-bottom:2px solid #2d3561;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px}
+header h1{font-size:1.2rem;color:#fff}
+header p{font-size:.74rem;color:#8888aa;margin-top:3px}
+.nav-link{padding:6px 14px;border-radius:8px;background:#1e1e38;color:#aaa;text-decoration:none;font-size:.8rem;border:1px solid #2d3561;transition:all .18s}
+.nav-link:hover{background:#e94560;color:#fff;border-color:#e94560}
+.nav-link.active{background:#e94560;color:#fff;border-color:#e94560}
+/* 平台切换 Tab */
+.platform-bar{display:flex;gap:0;padding:0 28px;background:#0d0d1a;border-bottom:2px solid #1e1e38}
+.pt-tab{padding:10px 28px;font-size:.85rem;font-weight:600;cursor:pointer;border:none;background:transparent;color:#555577;border-bottom:2px solid transparent;margin-bottom:-2px;transition:all .18s;letter-spacing:.3px}
+.pt-tab:hover{color:#aaa}
+.pt-tab.and-active{color:#e94560;border-bottom-color:#e94560}
+.pt-tab.ios-active{color:#27ae60;border-bottom-color:#27ae60}
+/* 筛选栏 */
+.filter-bar{display:flex;gap:9px;padding:11px 28px;background:#111128;border-bottom:1px solid #1e1e38;flex-wrap:wrap;align-items:center}
 .filter-bar>span{font-size:.8rem;color:#8888aa}
-.btn-p{padding:6px 16px;border-radius:18px;border:1.5px solid #2d3561;background:transparent;color:#888;cursor:pointer;font-size:.8rem;transition:all .18s}
+.btn-p{padding:5px 15px;border-radius:18px;border:1.5px solid #2d3561;background:transparent;color:#888;cursor:pointer;font-size:.79rem;transition:all .18s}
 .btn-p:hover{border-color:#e94560;color:#e94560}
 .btn-p.active{background:#e94560;border-color:#e94560;color:#fff;font-weight:700}
+.btn-p.ios-mode:hover{border-color:#27ae60;color:#27ae60}
+.btn-p.ios-mode.active{background:#27ae60;border-color:#27ae60;color:#fff}
 .info-bar{margin-left:auto;font-size:.72rem;color:#444466}
-.refresh-btn{padding:5px 14px;border-radius:14px;border:1px solid #2d3561;background:transparent;color:#888;cursor:pointer;font-size:.76rem;transition:all .18s}
+.refresh-btn{padding:5px 13px;border-radius:14px;border:1px solid #2d3561;background:transparent;color:#888;cursor:pointer;font-size:.75rem;transition:all .18s}
 .refresh-btn:hover{border-color:#2ecc71;color:#2ecc71}
 main{padding:20px 28px}
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:11px;margin-bottom:20px}
-.card{background:#13132b;border-radius:10px;padding:14px 16px;border:1px solid #222248}
+.card{background:#13132b;border-radius:10px;padding:14px 16px;border:1px solid #222248;transition:border-color .3s}
+.card.ios-card{background:#13231a;border-color:#224433}
 .card .lbl{font-size:.68rem;color:#8888aa;text-transform:uppercase;letter-spacing:.5px}
 .card .val{font-size:1.4rem;font-weight:700;margin-top:6px}
 .v-w{color:#fff}.v-r{color:#ff6b6b}.v-b{color:#53d8fb}.v-y{color:#ffd93d}.v-g{color:#2ecc71}
@@ -52,9 +63,13 @@ td:first-child{text-align:left;padding-left:14px}
 .formula{font-size:.66rem;color:#888855;margin-left:3px;font-style:italic}
 .loading{text-align:center;padding:50px;color:#555577}
 .spinner{display:inline-block;width:24px;height:24px;border:3px solid #2d3561;border-top-color:#e94560;border-radius:50%;animation:spin .7s linear infinite;margin-bottom:8px}
+.spinner.ios-spin{border-color:#2d5635;border-top-color:#27ae60}
 @keyframes spin{to{transform:rotate(360deg)}}
 .note-tag{font-size:.66rem;padding:1px 6px;border-radius:5px;background:#1e1e38;color:#8888aa;margin-left:6px;vertical-align:middle}
 .footer-note{margin-top:14px;font-size:.7rem;color:#444466;padding:8px 12px;background:#111128;border-radius:6px;border:1px solid #1e1e38}
+.platform-badge{display:inline-block;padding:2px 9px;border-radius:10px;font-size:.7rem;font-weight:700;margin-left:8px;vertical-align:middle}
+.and-badge{background:rgba(233,69,96,.18);color:#e94560;border:1px solid #e94560}
+.ios-badge{background:rgba(39,174,96,.18);color:#27ae60;border:1px solid #27ae60}
 ::-webkit-scrollbar{height:4px;width:4px}
 ::-webkit-scrollbar-thumb{background:#2d3561;border-radius:2px}
 </style>
@@ -62,15 +77,20 @@ td:first-child{text-align:left;padding-left:14px}
 <body>
 <header>
   <div>
-    <h1>📊 Adjust PH_lucy — Channel 看板</h1>
-    <p>Attribution source: First · Cohort maturity: Immature · UTC+8 · App: PesoloanNew</p>
+    <h1>📊 Adjust PH_lucy — Channel 看板 <span id="hdr-badge" class="platform-badge and-badge">Android</span></h1>
+    <p id="hdr-sub">Attribution source: First · Cohort maturity: Immature · UTC+8 · App: PesoloanNew Android</p>
   </div>
   <div style="display:flex;gap:8px;align-items:center">
     <a href="/" class="nav-link active">Channel</a>
     <a href="/campaign" class="nav-link">Campaign</a>
   </div>
 </header>
-<div class="filter-bar">
+<!-- 平台切换 Tab -->
+<div class="platform-bar">
+  <button class="pt-tab and-active" id="tab-and" onclick="switchPlatform('android')">🤖 Android</button>
+  <button class="pt-tab" id="tab-ios" onclick="switchPlatform('ios')">🍎 iOS</button>
+</div>
+<div class="filter-bar" id="filter-bar">
   <span>📅</span>
   <button class="btn-p active" onclick="sw(this,'today')">今日实时</button>
   <button class="btn-p" onclick="sw(this,'yesterday')">昨日数据</button>
@@ -83,6 +103,10 @@ td:first-child{text-align:left;padding-left:14px}
 <main id="main"><div class="loading"><div class="spinner"></div><br>加载中…</div></main>
 <script>
 let CUR = 'today';
+let PLATFORM = 'android'; // 'android' | 'ios'
+const IOS_KEY_CH = ['Facebook','TikTok for Business','Apple'];
+const AND_KEY_CH = ['Google Ads','Facebook','TikTok for Business'];
+
 const n  = v => v==null?'—':Number(v).toLocaleString();
 const m  = v => (!v&&v!==0)||v===0?'—':'$'+Number(v).toLocaleString('en',{minimumFractionDigits:2,maximumFractionDigits:2});
 const cpsHtml=(v,fixed)=>{
@@ -100,36 +124,59 @@ function mkRow(r,cls,hasDay){
   const costD=r.cost_formula?`${m(r.cost)}<span class="formula">${r.cost_formula}</span>`:m(r.cost);
   return `<tr class="${cls}"><td>${r.channel||'—'}</td>${dc}<td>${n(r.clicks)}</td><td>${n(r.installs)}</td><td class="c-cost">${costD}</td><td>${n(r.register)}</td><td>${n(r.apply)}</td><td class="c-loan">${n(r.loan)}</td><td>${m(r.revenue)}</td><td>${cpsHtml(r.cps,r.cps_fixed)}</td></tr>`;
 }
+function isKey(ch){ return PLATFORM==='ios'? IOS_KEY_CH.includes(ch) : AND_KEY_CH.includes(ch); }
 function render(d){
-  const t=d.total,hasDay=d.has_day;
+  const t=d.total, hasDay=d.has_day;
   const tag=hasDay?'<span class="note-tag">按日</span>':'<span class="note-tag">汇总</span>';
   const dr=d.start===d.end?d.start:`${d.start} ~ ${d.end}`;
   document.getElementById('ib').textContent=`日期：${dr}  |  拉取：${d.pulled_at}`;
-  const keys=d.by_channel.filter(r=>r.is_key);
-  const others=d.by_channel.filter(r=>!r.is_key);
-  const totalRow=`<tr class="r-total"><td>🔢 ALL CHANNELS TOTAL</td>${hasDay?'<td>—</td>':''}<td>${n(t.clicks)}</td><td>${n(t.installs)}</td><td class="c-cost">${m(t.cost)}</td><td>${n(t.register)}</td><td>${n(t.apply)}</td><td class="c-loan">${n(t.loan)}</td><td>${m(t.revenue)}</td><td>${cpsHtml(t.cps,false)}</td></tr>`;
+  const keys   = d.by_channel.filter(r=>isKey(r.channel));
+  const others = d.by_channel.filter(r=>!isKey(r.channel));
+  const label  = PLATFORM==='ios'?'iOS 核心渠道':'三大核心渠道';
+  const totalLabel = PLATFORM==='ios'?'🍎 iOS ALL CHANNELS TOTAL':'🔢 ALL CHANNELS TOTAL';
+  const totalRow=`<tr class="r-total"><td>${totalLabel}</td>${hasDay?'<td>—</td>':''}<td>${n(t.clicks)}</td><td>${n(t.installs)}</td><td class="c-cost">${m(t.cost)}</td><td>${n(t.register)}</td><td>${n(t.apply)}</td><td class="c-loan">${n(t.loan)}</td><td>${m(t.revenue)}</td><td>${cpsHtml(t.cps,false)}</td></tr>`;
+  const iosCard = PLATFORM==='ios'?' ios-card':'';
   document.getElementById('main').innerHTML=`
     <div class="cards">
-      <div class="card"><div class="lbl">Installs</div><div class="val v-g">${n(t.installs)}</div></div>
-      <div class="card"><div class="lbl">Ad Spend</div><div class="val v-r">${m(t.cost)}</div></div>
-      <div class="card"><div class="lbl">Register</div><div class="val v-w">${n(t.register)}</div></div>
-      <div class="card"><div class="lbl">Apply Loan</div><div class="val v-w">${n(t.apply)}</div></div>
-      <div class="card"><div class="lbl">Loan Success</div><div class="val v-b">${n(t.loan)}</div></div>
-      <div class="card"><div class="lbl">Revenue</div><div class="val v-w">${m(t.revenue)}</div></div>
-      <div class="card"><div class="lbl">CPS</div><div class="val v-y">${t.cps?'$'+t.cps.toFixed(2):'—'}</div></div>
+      <div class="card${iosCard}"><div class="lbl">Installs</div><div class="val v-g">${n(t.installs)}</div></div>
+      <div class="card${iosCard}"><div class="lbl">Ad Spend</div><div class="val v-r">${m(t.cost)}</div></div>
+      <div class="card${iosCard}"><div class="lbl">Register</div><div class="val v-w">${n(t.register)}</div></div>
+      <div class="card${iosCard}"><div class="lbl">Apply Loan</div><div class="val v-w">${n(t.apply)}</div></div>
+      <div class="card${iosCard}"><div class="lbl">Loan Success</div><div class="val v-b">${n(t.loan)}</div></div>
+      <div class="card${iosCard}"><div class="lbl">Revenue</div><div class="val v-w">${m(t.revenue)}</div></div>
+      <div class="card${iosCard}"><div class="lbl">CPS</div><div class="val v-y">${t.cps?'$'+t.cps.toFixed(2):'—'}</div></div>
     </div>
     <div class="sec"><span class="dot d-g"></span>全渠道汇总 ${tag}</div>
     <div class="tbl-wrap"><table>${thead(hasDay)}<tbody>${totalRow}</tbody></table></div>
-    <div class="sec"><span class="dot d-r"></span>三大核心渠道 ${tag}</div>
+    <div class="sec"><span class="dot d-r"></span>${label} ${tag}</div>
     <div class="tbl-wrap"><table>${thead(hasDay)}<tbody>${keys.map(r=>mkRow(r,'r-key',hasDay)).join('')}</tbody></table></div>
-    <div class="sec"><span class="dot d-gr"></span>其他渠道（${others.length} 条）${tag}</div>
-    <div class="tbl-wrap"><table>${thead(hasDay)}<tbody>${others.map(r=>mkRow(r,'r-other',hasDay)).join('')}</tbody></table></div>
-    <div class="footer-note">💡 Ad Spend 估算：茄子快传=loan×4 · CK-loan And=loan×12 · Yundun-and=installs×0.4 · loan_market_2=installs×0.4 · CPS「固定」=固定成本价</div>`;
+    ${others.length?`<div class="sec"><span class="dot d-gr"></span>其他渠道（${others.length} 条）${tag}</div>
+    <div class="tbl-wrap"><table>${thead(hasDay)}<tbody>${others.map(r=>mkRow(r,'r-other',hasDay)).join('')}</tbody></table></div>`:''}
+    ${PLATFORM==='android'?`<div class="footer-note">💡 Ad Spend 估算：茄子快传=loan×4 · CK-loan And=loan×12 · Yundun-and=installs×0.4 · loan_market_2=installs×0.4</div>`:''}`;
+}
+function applyTheme(p){
+  const isIos = p==='ios';
+  // header
+  document.getElementById('hdr-badge').className='platform-badge '+(isIos?'ios-badge':'and-badge');
+  document.getElementById('hdr-badge').textContent=isIos?'iOS':'Android';
+  document.getElementById('hdr-sub').textContent=isIos?
+    'Attribution source: First · Cohort maturity: Immature · UTC+8 · App: PesoloanNew iOS':
+    'Attribution source: First · Cohort maturity: Immature · UTC+8 · App: PesoloanNew Android';
+  // tab
+  document.getElementById('tab-and').className='pt-tab'+(isIos?'':' and-active');
+  document.getElementById('tab-ios').className='pt-tab'+(isIos?' ios-active':'');
+  // period buttons
+  document.querySelectorAll('.btn-p').forEach(b=>{
+    b.classList.toggle('ios-mode', isIos);
+  });
+  // spinner color
+  document.querySelectorAll('.spinner').forEach(s=>s.classList.toggle('ios-spin',isIos));
 }
 async function load(period){
-  document.getElementById('main').innerHTML='<div class="loading"><div class="spinner"></div><br>拉取中…</div>';
+  document.getElementById('main').innerHTML=`<div class="loading"><div class="spinner${PLATFORM==='ios'?' ios-spin':''}"></div><br>拉取中…</div>`;
+  const api = PLATFORM==='ios'?'/api/ios/channel':'/api/channel';
   try{
-    const r=await fetch('/api/channel?period='+period);
+    const r=await fetch(api+'?period='+period);
     const d=await r.json();
     if(!d.ok) throw new Error(d.error);
     render(d);
@@ -144,6 +191,11 @@ function sw(btn,period){
   load(period);
 }
 function refresh(){ load(CUR); }
+function switchPlatform(p){
+  PLATFORM=p;
+  applyTheme(p);
+  load(CUR);
+}
 load('today');
 </script>
 </body>

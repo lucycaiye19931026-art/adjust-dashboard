@@ -34,7 +34,7 @@ CPS_FIXED = {
 FB_LONG_TOKEN = os.environ.get("FB_LONG_TOKEN", "")
 FB_APP_ID     = os.environ.get("FB_APP_ID",     "3740970239454882")
 FB_APP_SECRET = os.environ.get("FB_APP_SECRET", "")
-FB_ACT_IDS    = ["act_2043458276522117", "act_1338744840870824", "act_554870820824463"]
+FB_ACT_IDS    = ["act_2043458276522117", "act_1338744840870824", "act_554870820824463", "act_1763443588125609", "act_4425161567801548"]
 FB_BASE       = "https://graph.facebook.com/v19.0"
 
 # ── TikTok Ads API 配置 ───────────────────────────────────
@@ -45,7 +45,7 @@ TT_BASE         = "https://business-api.tiktok.com/open_api/v1.3"
 # ── iOS 专属配置 ──────────────────────────────────────────
 IOS_APP_TOKEN   = os.environ.get("IOS_ADJUST_APP_TOKEN", "du1u32cgaigw")
 IOS_KEY_CH      = ["Facebook", "TikTok for Business", "Apple"]
-FB_IOS_ACT_IDS  = ["act_826668223504196", "act_485941130935481"]
+FB_IOS_ACT_IDS  = ["act_826668223504196", "act_485941130935481", "act_1050911951210157", "act_2487386801730510"]
 TT_IOS_ADV_ID   = os.environ.get("TT_IOS_ADV_ID", "7358007484973563921")
 
 BASE_PARAMS = {

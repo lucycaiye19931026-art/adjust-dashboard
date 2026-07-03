@@ -704,7 +704,7 @@ def api_ios_channel():
 
         rows.sort(key=lambda x: (0 if x["channel"] in IOS_KEY_CH else 1, -(x.get("cost") or 0)))
 
-        # 汇总
+        # 汇总（Total = 全渠道汇总，与 Adjust 后台一致）
         seen = {}
         for r in rows:
             ch = r["channel"]
@@ -712,16 +712,16 @@ def api_ios_channel():
             else:
                 for f in ("clicks","installs","cost","register","apply","loan","revenue"):
                     seen[ch][f] = round((seen[ch].get(f) or 0) + (r.get(f) or 0), 2)
-        tc = round(sum(v.get("cost",0) for ch,v in seen.items() if ch in IOS_KEY_CH), 2)
-        tl = sum(int(v.get("loan",0)) for ch,v in seen.items() if ch in IOS_KEY_CH)
+        tc = round(sum(v.get("cost",0) for v in seen.values()), 2)
+        tl = sum(int(v.get("loan",0)) for v in seen.values())
         total = {
-            "clicks":   sum(int(v.get("clicks",0))   for ch,v in seen.items() if ch in IOS_KEY_CH),
-            "installs": sum(int(v.get("installs",0)) for ch,v in seen.items() if ch in IOS_KEY_CH),
+            "clicks":   sum(int(v.get("clicks",0))   for v in seen.values()),
+            "installs": sum(int(v.get("installs",0)) for v in seen.values()),
             "cost":     tc,
-            "register": sum(int(v.get("register",0)) for ch,v in seen.items() if ch in IOS_KEY_CH),
-            "apply":    sum(int(v.get("apply",0))    for ch,v in seen.items() if ch in IOS_KEY_CH),
+            "register": sum(int(v.get("register",0)) for v in seen.values()),
+            "apply":    sum(int(v.get("apply",0))    for v in seen.values()),
             "loan":     tl,
-            "revenue":  round(sum(v.get("revenue",0) for ch,v in seen.items() if ch in IOS_KEY_CH), 2),
+            "revenue":  round(sum(v.get("revenue",0) for v in seen.values()), 2),
             "cps":      round(tc/tl, 2) if tl > 0 else None,
         }
         return jsonify({

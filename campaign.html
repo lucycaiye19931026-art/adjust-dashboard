@@ -29,12 +29,13 @@ header p{font-size:.74rem;color:#8888aa;margin-top:3px}
 .refresh-btn{padding:5px 13px;border-radius:14px;border:1px solid #2d3561;background:transparent;color:#888;cursor:pointer;font-size:.75rem;transition:all .18s}
 .refresh-btn:hover{border-color:#2ecc71;color:#2ecc71}
 main{padding:20px 28px}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:11px;margin-bottom:20px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:11px;margin-bottom:8px}
 .card{background:#13132b;border-radius:10px;padding:14px 16px;border:1px solid #222248}
 .card.ios-card{background:#13231a;border-color:#224433}
 .card .lbl{font-size:.68rem;color:#8888aa;text-transform:uppercase;letter-spacing:.5px}
 .card .val{font-size:1.4rem;font-weight:700;margin-top:6px}
 .v-w{color:#fff}.v-r{color:#ff6b6b}.v-b{color:#53d8fb}.v-y{color:#ffd93d}.v-g{color:#2ecc71}
+.total-note{font-size:.72rem;color:#666688;margin:0 0 20px 2px}
 .ch-block{margin-bottom:20px;border-radius:10px;overflow:hidden;border:1px solid #1e1e38}
 .ch-header{display:flex;align-items:center;justify-content:space-between;padding:11px 16px;flex-wrap:wrap;gap:8px}
 .ch-name{font-size:.95rem;font-weight:700;display:flex;align-items:center;gap:8px}
@@ -143,7 +144,8 @@ function render(d){
     <div class="card${iosCard}"><div class="lbl">Loan Success</div><div class="val v-b">${n(t.loan)}</div></div>
     <div class="card${iosCard}"><div class="lbl">Revenue</div><div class="val v-w">${m(t.revenue)}</div></div>
     <div class="card${iosCard}"><div class="lbl">CPS</div><div class="val v-y">${t.cps?'$'+t.cps.toFixed(2):'—'}</div></div>
-  </div>`;
+  </div>
+  <div class="total-note">ℹ️ Total 为全渠道汇总（含 Organic / CK-loan / loan_market 等长尾渠道），与 Adjust 后台总数一致；下方明细表仅展示三大核心付费渠道 Campaign 数据</div>`;
   let blocks='';
   for(const ch of KEY_CH){
     const cfg=CH_CFG[ch];

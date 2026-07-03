@@ -462,6 +462,63 @@ def parse_rows(rows_raw, mode="channel"):
     return result
 
 
+def compute_full_channel_total(period):
+    """拉取全渠道 channel 维度数据并汇总 Total（与 Adjust 后台总数口径一致，含长尾/自然量渠道）。
+    复用 /api/channel 的合并 + 真实消耗注入逻辑，但只返回汇总后的 total 字典。"""
+    start, end = date_range(period)
+    dims = "channel,day" if has_day(period) else "channel"
+    resp = requests.get(BASE_URL, headers=HEADERS, timeout=55, params={
+        "app_token__in": APP_TOKEN,
+        "date_period":   f"{start}:{end}",
+        "dimensions":    dims,
+        **BASE_PARAMS,
+    })
+    resp.raise_for_status()
+    raw  = resp.json()
+    rows = parse_rows(raw.get("rows", []), "channel")
+
+    rows = merge_ck(rows)
+    for r in rows:
+        if r["channel"] != "CK-loan And":
+            apply_formula(r)
+
+    fb_real_spend = fetch_fb_channel_spend(period)
+    for r in rows:
+        if r["channel"] == "Facebook":
+            r["cost"] = fb_real_spend
+
+    tt_real_spend = fetch_tt_channel_spend(period)
+    for r in rows:
+        if r["channel"] == "TikTok for Business":
+            r["cost"] = tt_real_spend
+
+    gg_real_spend = fetch_gg_spend(period)
+    if gg_real_spend > 0:
+        for r in rows:
+            if r["channel"] == "Google Ads":
+                r["cost"] = gg_real_spend
+
+    seen = {}
+    for r in rows:
+        ch = r["channel"]
+        if ch not in seen: seen[ch] = dict(r)
+        else:
+            for f in ("clicks","installs","cost","register","apply","loan","revenue"):
+                seen[ch][f] = round((seen[ch].get(f) or 0) + (r.get(f) or 0), 2)
+    tc = round(sum(v.get("cost",0) for v in seen.values()), 2)
+    tl = sum(int(v.get("loan",0)) for v in seen.values())
+    return {
+        "clicks":   sum(int(v.get("clicks",0))   for v in seen.values()),
+        "installs": sum(int(v.get("installs",0)) for v in seen.values()),
+        "cost":     tc,
+        "register": sum(int(v.get("register",0)) for v in seen.values()),
+        "apply":    sum(int(v.get("apply",0))    for v in seen.values()),
+        "loan":     tl,
+        "revenue":  round(sum(v.get("revenue",0) for v in seen.values()), 2),
+        "cps":      round(tc/tl, 2) if tl > 0 else None,
+    }
+
+
 # ── API 路由 ─────────────────────────────────────────────
 
 @app.route("/api/channel")
@@ -638,9 +695,10 @@ def api_campaign():
             tc = ch_totals[ch]["cost"]
             ch_totals[ch]["cps"] = round(tc/tl, 2) if tl > 0 else None
 
+        # 三大核心渠道口径小计（仅供参考，与下方 Campaign 明细表对应）
         key_cost = sum(ch_totals.get(ch,{}).get("cost",0) for ch in KEY_CH)
         key_loan = sum(ch_totals.get(ch,{}).get("loan",0) for ch in KEY_CH)
-        total = {
+        key_total = {
             "clicks":   sum(ch_totals.get(ch,{}).get("clicks",0)   for ch in KEY_CH),
             "installs": sum(ch_totals.get(ch,{}).get("installs",0) for ch in KEY_CH),
             "cost":     round(key_cost, 2),
@@ -651,11 +709,15 @@ def api_campaign():
             "cps":      round(key_cost/key_loan, 2) if key_loan > 0 else None,
         }
 
+        # ★ Total 卡片改为全渠道口径（与 Adjust 后台总数一致，含 CK-loan/loan_market/Organic 等长尾渠道）
+        total = compute_full_channel_total(period)
+
         return jsonify({
             "ok": True, "period": period, "start": start, "end": end,
             "has_day": has_day(period),
             "pulled_at": now8().strftime("%Y-%m-%d %H:%M:%S"),
-            "total": total, "channel_totals": ch_totals, "by_campaign": rows,
+            "total": total, "key_total": key_total,
+            "channel_totals": ch_totals, "by_campaign": rows,
         })
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -734,6 +796,54 @@ def api_ios_channel():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+def compute_full_ios_channel_total(period):
+    """iOS 版全渠道 Total 汇总（与 Adjust 后台 iOS 总数口径一致，含 Organic/MOLOCO 等长尾渠道）。"""
+    start, end = date_range(period)
+    dims = "channel,day" if has_day(period) else "channel"
+    resp = requests.get(BASE_URL, headers={"Authorization": f"Bearer {USER_TOKEN}"},
+                        timeout=55, params={
+                            "app_token__in": IOS_APP_TOKEN,
+                            "date_period":   f"{start}:{end}",
+                            "dimensions":    dims,
+                            **BASE_PARAMS,
+                        })
+    resp.raise_for_status()
+    raw  = resp.json()
+    rows = parse_rows(raw.get("rows", []), "channel")
+    for r in rows:
+        apply_formula(r)
+
+    fb_ios_spend = fetch_fb_ios_channel_spend(period)
+    for r in rows:
+        if r["channel"] == "Facebook":
+            r["cost"] = fb_ios_spend
+
+    tt_ios_spend = fetch_tt_ios_channel_spend(period)
+    for r in rows:
+        if r["channel"] == "TikTok for Business":
+            r["cost"] = tt_ios_spend
+
+    seen = {}
+    for r in rows:
+        ch = r["channel"]
+        if ch not in seen: seen[ch] = dict(r)
+        else:
+            for f in ("clicks","installs","cost","register","apply","loan","revenue"):
+                seen[ch][f] = round((seen[ch].get(f) or 0) + (r.get(f) or 0), 2)
+    tc = round(sum(v.get("cost",0) for v in seen.values()), 2)
+    tl = sum(int(v.get("loan",0)) for v in seen.values())
+    return {
+        "clicks":   sum(int(v.get("clicks",0))   for v in seen.values()),
+        "installs": sum(int(v.get("installs",0)) for v in seen.values()),
+        "cost":     tc,
+        "register": sum(int(v.get("register",0)) for v in seen.values()),
+        "apply":    sum(int(v.get("apply",0))    for v in seen.values()),
+        "loan":     tl,
+        "revenue":  round(sum(v.get("revenue",0) for v in seen.values()), 2),
+        "cps":      round(tc/tl, 2) if tl > 0 else None,
+    }
+
+
 @app.route("/api/ios/campaign")
 def api_ios_campaign():
     period = request.args.get("period", "yesterday")
@@ -807,9 +917,10 @@ def api_ios_campaign():
             tc = ch_totals[ch]["cost"]
             ch_totals[ch]["cps"] = round(tc/tl, 2) if tl > 0 else None
 
+        # 三大核心渠道口径小计（仅供参考，与下方 Campaign 明细表对应）
         key_cost = sum(ch_totals.get(ch,{}).get("cost",0) for ch in IOS_KEY_CH)
         key_loan = sum(ch_totals.get(ch,{}).get("loan",0) for ch in IOS_KEY_CH)
-        total = {
+        key_total = {
             "clicks":   sum(ch_totals.get(ch,{}).get("clicks",0)   for ch in IOS_KEY_CH),
             "installs": sum(ch_totals.get(ch,{}).get("installs",0) for ch in IOS_KEY_CH),
             "cost":     round(key_cost, 2),
@@ -819,11 +930,16 @@ def api_ios_campaign():
             "revenue":  round(sum(ch_totals.get(ch,{}).get("revenue",0) for ch in IOS_KEY_CH), 2),
             "cps":      round(key_cost/key_loan, 2) if key_loan > 0 else None,
         }
+
+        # ★ Total 卡片改为全渠道口径（与 Adjust 后台 iOS 总数一致，含 Organic/MOLOCO 等长尾渠道）
+        total = compute_full_ios_channel_total(period)
+
         return jsonify({
             "ok": True, "period": period, "start": start, "end": end,
             "has_day": has_day(period),
             "pulled_at": now8().strftime("%Y-%m-%d %H:%M:%S"),
-            "total": total, "channel_totals": ch_totals, "by_campaign": rows,
+            "total": total, "key_total": key_total,
+            "channel_totals": ch_totals, "by_campaign": rows,
         })
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500

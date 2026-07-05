@@ -611,8 +611,11 @@ def api_channel():
 @app.route("/api/campaign")
 def api_campaign():
     period = request.args.get("period", "yesterday")
-    start, end = date_range(period)
-    dims = "channel,campaign,day" if has_day(period) else "channel,campaign"
+    start = request.args.get("start") or date_range(period)[0]
+    end   = request.args.get("end")   or date_range(period)[1]
+    # 自定义日期段或 today/yesterday 按日展开，其余汇总
+    multi_day = (start != end) or has_day(period) if not request.args.get("start") else (start != end)
+    dims = "channel,campaign,day" if multi_day else "channel,campaign"
     try:
         resp = requests.get(BASE_URL, headers=HEADERS, timeout=55, params={
             "app_token__in": APP_TOKEN,

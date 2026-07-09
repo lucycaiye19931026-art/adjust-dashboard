@@ -34,7 +34,7 @@ CPS_FIXED = {
 FB_LONG_TOKEN = os.environ.get("FB_LONG_TOKEN", "")
 FB_APP_ID     = os.environ.get("FB_APP_ID",     "3740970239454882")
 FB_APP_SECRET = os.environ.get("FB_APP_SECRET", "")
-FB_ACT_IDS    = ["act_2043458276522117", "act_1338744840870824", "act_554870820824463", "act_1763443588125609", "act_4425161567801548"]
+FB_ACT_IDS    = ["act_2043458276522117", "act_1338744840870824", "act_554870820824463", "act_1763443588125609", "act_4425161567801548", "act_3511882642320376", "act_1654205562363513"]
 FB_BASE       = "https://graph.facebook.com/v19.0"
 
 # ── TikTok Ads API 配置 ───────────────────────────────────
@@ -383,6 +383,139 @@ def fetch_gg_campaign_spend(period):
     _gg_spend_cache["ts"] = now
     return result
 
+# ── Adgroup 级别消耗拉取（三大平台）────────────────────
+def _adgroup_cache_key(platform, period):
+    return f"adgroup_{platform}_{period}"
+
+def fetch_fb_adgroup_spend(period):
+    """拉取所有FB账户 Adset 级别消耗，返回 {campaign_name: {adset_name: spend}}"""
+    import time
+    now = time.time()
+    ck = _adgroup_cache_key("fb", period)
+    if _gg_spend_cache["data"].get(ck) and now - _gg_spend_cache["ts"] < 60:
+        return _gg_spend_cache["data"][ck]
+    since, until = fb_date_range(period)
+    token = get_fb_token()
+    result = {}
+    for act_id in FB_ACT_IDS:
+        try:
+            r = requests.get(f"{FB_BASE}/{act_id}/insights", timeout=30, params={
+                "access_token": token,
+                "fields":       "adset_name,campaign_name,spend",
+                "time_range":   _json.dumps({"since": since, "until": until}),
+                "level":        "adset",
+                "limit":        200,
+            })
+            if r.status_code == 200:
+                for row in r.json().get("data", []):
+                    cname = row.get("campaign_name", "")
+                    aname = row.get("adset_name", "")
+                    spend = float(row.get("spend", 0))
+                    if cname not in result:
+                        result[cname] = {}
+                    result[cname][aname] = round(result[cname].get(aname, 0) + spend, 2)
+        except Exception:
+            pass
+    _gg_spend_cache["data"][ck] = result
+    _gg_spend_cache["ts"] = now
+    return result
+
+def fetch_tt_adgroup_spend(period):
+    """拉取 TikTok Adgroup 级别消耗，返回 {campaign_name: {adgroup_name: spend}}"""
+    import time
+    now = time.time()
+    ck = _adgroup_cache_key("tt", period)
+    if _gg_spend_cache["data"].get(ck) and now - _gg_spend_cache["ts"] < 60:
+        return _gg_spend_cache["data"][ck]
+    since, until = tt_date_range(period)
+    result = {}
+    try:
+        r = requests.get(f"{TT_BASE}/report/integrated/get/",
+                         headers={"Access-Token": TT_ACCESS_TOKEN}, timeout=30,
+                         params={
+                             "advertiser_id": TT_ADV_ID,
+                             "report_type":   "BASIC",
+                             "data_level":    "AUCTION_ADGROUP",
+                             "dimensions":    _json.dumps(["adgroup_id"]),
+                             "metrics":       _json.dumps(["adgroup_name", "campaign_name", "spend"]),
+                             "start_date":    since,
+                             "end_date":      until,
+                             "page_size":     200,
+                         })
+        d = r.json()
+        if d.get("code") == 0:
+            for row in d.get("data", {}).get("list", []):
+                m     = row.get("metrics", {})
+                cname = m.get("campaign_name", "")
+                aname = m.get("adgroup_name", "")
+                spend = float(m.get("spend", 0) or 0)
+                if cname and aname:
+                    if cname not in result:
+                        result[cname] = {}
+                    result[cname][aname] = round(result[cname].get(aname, 0) + spend, 2)
+    except Exception:
+        pass
+    _gg_spend_cache["data"][ck] = result
+    _gg_spend_cache["ts"] = now
+    return result
+
+def fetch_gg_adgroup_spend(period):
+    """拉取 Google Ads Adgroup 级别消耗，返回 {campaign_name: {adgroup_name: spend}}"""
+    import time
+    now = time.time()
+    ck = _adgroup_cache_key("gg", period)
+    if _gg_spend_cache["data"].get(ck) and now - _gg_spend_cache["ts"] < 60:
+        return _gg_spend_cache["data"][ck]
+    since, until = _gg_date_range(period)
+    query = f"""
+        SELECT campaign.name, ad_group.name, metrics.cost_micros
+        FROM ad_group
+        WHERE segments.date BETWEEN '{since}' AND '{until}'
+          AND metrics.cost_micros > 0
+    """
+    rows = _gg_query(query)
+    result = {}
+    for row in rows:
+        cname = row.get("campaign", {}).get("name", "")
+        aname = row.get("adGroup", {}).get("name", "") if "adGroup" in row else row.get("ad_group", {}).get("name", "")
+        spend = int(row.get("metrics", {}).get("costMicros", 0)) / 1e6
+        if cname and aname:
+            if cname not in result:
+                result[cname] = {}
+            result[cname][aname] = round(result[cname].get(aname, 0) + spend, 2)
+    _gg_spend_cache["data"][ck] = result
+    _gg_spend_cache["ts"] = now
+    return result
+
+def _match_adgroup_map(adgroup_map, adjust_campaigns):
+    """将平台原始 adgroup 数据 {plat_camp: {adgroup_name: spend}} 映射到 Adjust campaign 名称"""
+    result = {}
+    for plat_camp, adgroups in adgroup_map.items():
+        matched = None
+        # 精确匹配
+        for ac in adjust_campaigns:
+            if plat_camp == ac:
+                matched = ac
+                break
+        # 去除空格、小写后匹配
+        if not matched:
+            plat_norm = plat_camp.replace(" ", "").lower()
+            for ac in adjust_campaigns:
+                if plat_norm == ac.replace(" ", "").lower():
+                    matched = ac
+                    break
+        # 模糊匹配：检查 Adjust campaign 是否包含平台 campaign 名称
+        if not matched:
+            for ac in adjust_campaigns:
+                if plat_camp.lower() in ac.lower() or ac.lower() in plat_camp.lower():
+                    matched = ac
+                    break
+        if matched:
+            # 按 spend 降序排列
+            sorted_ag = sorted(adgroups.items(), key=lambda x: -x[1])
+            result[matched] = [{"name": aname, "spend": round(sp, 2)} for aname, sp in sorted_ag]
+    return result
+
 def date_range(period):
     t  = now8()
     td = t.strftime("%Y-%m-%d")
@@ -715,12 +848,31 @@ def api_campaign():
         # ★ Total 卡片改为全渠道口径（与 Adjust 后台总数一致，含 CK-loan/loan_market/Organic 等长尾渠道）
         total = compute_full_channel_total(period)
 
+        # ★ 拉取 Adgroup 级别消耗，供前端按 Campaign 展开
+        adgroups = {}
+        try:
+            fb_ag = fetch_fb_adgroup_spend(period)
+            tt_ag = fetch_tt_adgroup_spend(period)
+            gg_ag = fetch_gg_adgroup_spend(period)
+            # 获取 Adjust 侧的所有 campaign 名称，用于映射
+            fb_adj_camps = [r["campaign"] for r in rows if r["channel"] == "Facebook"]
+            tt_adj_camps = [r["campaign"] for r in rows if r["channel"] == "TikTok for Business"]
+            gg_adj_camps = [r["campaign"] for r in rows if r["channel"] == "Google Ads"]
+            adgroups = {
+                "Facebook": _match_adgroup_map(fb_ag, fb_adj_camps),
+                "TikTok for Business": _match_adgroup_map(tt_ag, tt_adj_camps),
+                "Google Ads": _match_adgroup_map(gg_ag, gg_adj_camps),
+            }
+        except Exception:
+            pass
+
         return jsonify({
             "ok": True, "period": period, "start": start, "end": end,
             "has_day": has_day(period),
             "pulled_at": now8().strftime("%Y-%m-%d %H:%M:%S"),
             "total": total, "key_total": key_total,
             "channel_totals": ch_totals, "by_campaign": rows,
+            "adgroups": adgroups,
         })
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500

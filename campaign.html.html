@@ -18,8 +18,7 @@ header p{font-size:.74rem;color:#8888aa;margin-top:3px}
 .pt-tab:hover{color:#aaa}
 .pt-tab.and-active{color:#e94560;border-bottom-color:#e94560}
 .pt-tab.ios-active{color:#27ae60;border-bottom-color:#27ae60}
-.filter-bar{display:flex;gap:9px;padding:11px 28px;background:#111128;border-bottom:1px solid #1e1e38;flex-wrap:wrap;align-items:center}
-.filter-bar>span{font-size:.8rem;color:#8888aa}
+.filter-bar{display:flex;gap:9px;padding:11px 28px 14px;background:#111128;border-bottom:1px solid #1e1e38;flex-wrap:wrap;align-items:center;min-height:48px;row-gap:8px}.filter-bar>span{font-size:.8rem;color:#8888aa}
 .btn-p{padding:5px 15px;border-radius:18px;border:1.5px solid #2d3561;background:transparent;color:#888;cursor:pointer;font-size:.79rem;transition:all .18s}
 .btn-p:hover{border-color:#e94560;color:#e94560}
 .btn-p.active{background:#e94560;border-color:#e94560;color:#fff;font-weight:700}
@@ -56,7 +55,6 @@ td:nth-child(2){text-align:left;color:#666688;font-size:.72rem}
 .subtotal td{background:rgba(255,255,255,.04);font-weight:600;border-top:1px solid #2d3561!important}
 .subtotal td:first-child{color:#fff}
 .c-cost{color:#ff8080!important}.c-loan{color:#53d8fb!important}.c-na{color:#333355!important}
-/* Adgroup 展开行 */
 .ag-expand{cursor:pointer;display:inline-block;width:18px;text-align:center;font-weight:700;color:#666688;margin-right:4px;transition:all .15s;user-select:none}
 .ag-expand:hover{color:#e94560}
 .ag-expand.open{color:#e94560}
@@ -112,7 +110,7 @@ td:nth-child(2){text-align:left;color:#666688;font-size:.72rem}
 <script>
 let CUR='yesterday';
 let PLATFORM='android';
-let AG_DATA={};  // 存储 adgroup 数据供展开使用
+let AG_DATA={};
 const AND_KEY_CH=['Google Ads','Facebook','TikTok for Business'];
 const IOS_KEY_CH=['Facebook','TikTok for Business','Apple'];
 const AND_CH_CFG={
@@ -176,8 +174,7 @@ function toggleAdgroup(e,icon){
     html+=`<tr class="ag-total"><td>📋 ${agList.length} adgroups 合计</td><td></td><td></td><td></td><td class="c-cost" style="font-weight:600">${m(Math.round(total*100)/100)}</td><td></td><td></td><td></td><td></td><td></td></tr>`;
     tr.insertAdjacentHTML('afterend',html);
   }
-}
-function render(d){
+}function render(d){
   const t=d.total, hasDay=d.has_day;
   AG_DATA=d.adgroups||{};
   const tag=hasDay?'<span class="note-tag">按日</span>':'<span class="note-tag">汇总</span>';

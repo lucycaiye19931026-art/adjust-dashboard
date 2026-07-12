@@ -93,6 +93,17 @@ tbody tr.clickable.open{background:rgba(233,69,96,.06)}
 .cmp-tbl td:first-child{text-align:left;color:#ddd;font-weight:600}
 .cmp-tbl tr+tr{border-top:1px solid rgba(255,255,255,.05)}
 .cmp-tbl tr.loading-row td{color:#556;text-align:center}
+.ag-fold{display:inline-block;cursor:pointer;padding:5px 12px;margin:2px 0;border-radius:8px;background:#1a1a3a;border:1px solid #2d3561;color:#88bbdd;font-size:.72rem;font-weight:600;user-select:none;transition:all .15s}
+.ag-fold:hover{border-color:#53d8fb;color:#53d8fb}
+.ag-fold.open{background:#16305a;border-color:#53d8fb;color:#53d8fb}
+.ag-list{margin:8px 0 0 4px;padding-left:8px;border-left:2px solid #26264e}
+.ag-item{margin:6px 0}
+.ag-name{display:inline-block;cursor:pointer;padding:4px 10px;border-radius:6px;background:#141432;border:1px solid #22224a;color:#99bbdd;font-size:.7rem;user-select:none;transition:all .15s}
+.ag-name:hover{border-color:#53d8fb;color:#53d8fb}
+.ag-name.open{background:#16305a;border-color:#53d8fb;color:#8fd8ff}
+.ag-name::before{content:"\25B8 ";color:#668}
+.ag-name.open::before{content:"\25BE ";color:#53d8fb}
+.ag-detail{margin:6px 0 4px}
 ::-webkit-scrollbar{height:4px;width:4px}
 ::-webkit-scrollbar-thumb{background:#2d3561;border-radius:2px}
 </style>
@@ -138,9 +149,49 @@ function findAdgroups(pdata,ch,camp){if(!pdata||typeof pdata==='string')return n
 function findAgRow(pdata,ch,camp,agName){const list=findAdgroups(pdata,ch,camp);if(!list)return null;const a=list.find(x=>x.name===agName);if(!a)return null;return {installs:a.installs,cost:a.spend,register:a.register,apply:a.apply,loan:a.loan,revenue:a.revenue,cps:a.cps};}
 function cmpTable(title,getRowFn){const store=ALL[PLATFORM];let head='<th>日期</th>'+CMP_METRICS.map(a=>`<th>${a[1]}</th>`).join('');let body='';for(const dd of DATES){const dk=dd[0],dl=dd[1];const pdata=store[dk];if(pdata==='loading'||pdata===undefined){body+=`<tr class="loading-row"><td>${dl}</td><td colspan="${CMP_METRICS.length}">⏳ 加载中…</td></tr>`;continue;}if(pdata==='error'){body+=`<tr class="loading-row"><td>${dl}</td><td colspan="${CMP_METRICS.length}" style="color:#e94560">❌ 加载失败</td></tr>`;continue;}const r=getRowFn(pdata)||{};body+=`<tr><td>${dl}</td>`+CMP_METRICS.map(a=>`<td>${fmtMetric(a[0],r[a[0]])}</td>`).join('')+'</tr>';}return `<div class="cmp-grid"><table class="cmp-tbl"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;}
 function collectAgNames(ch,camp){const store=ALL[PLATFORM];const set=new Set();for(const dd of DATES){const list=findAdgroups(store[dd[0]],ch,camp);if(list)list.forEach(a=>set.add(a.name));}return [...set];}
-function cmpCard(ch,camp){let html=`<div class="cmp-card"><div class="cmp-title">📊 ${camp} — 5 日期对比（Campaign 汇总）</div>`;html+=cmpTable(camp,pd=>findCampRow(pd,ch,camp));const agNames=collectAgNames(ch,camp);if(agNames.length){html+=`<div class="cmp-sub">▾ Adgroup 明细（各 ${agNames.length} 个广告组的 5 日期对比）</div>`;agNames.forEach(agn=>{html+=`<div class="cmp-title" style="color:#88bbdd;font-size:.7rem;margin:10px 0 4px">• ${agn}</div>`;html+=cmpTable(agn,pd=>findAgRow(pd,ch,camp,agn));});}else{html+=`<div class="cmp-sub" style="color:#556">该 Campaign 无 Adgroup 明细（spend=0 不展开）</div>`;}html+='</div>';return html;}
+function cmpCard(ch,camp){
+  const uid='u'+Math.random().toString(36).slice(2,9);
+  let html=`<div class="cmp-card"><div class="cmp-title">📊 ${camp} — 5 日期对比（Campaign 汇总）</div>`;
+  html+=cmpTable(pd=>findCampRow(pd,ch,camp));
+  const agNames=collectAgNames(ch,camp);
+  if(agNames.length){
+    const cch=ch.replace(/"/g,'&quot;');const ccamp=camp.replace(/"/g,'&quot;');
+    html+=`<div class="cmp-sub">Adgroup 明细</div>`;
+    html+=`<span class="ag-fold" data-uid="${uid}" data-ch="${cch}" data-camp="${ccamp}" onclick="toggleAgList(this)">▸ 展开 ${agNames.length} 个 Adgroup</span>`;
+    html+=`<div class="ag-list" id="aglist-${uid}" style="display:none"></div>`;
+  }else{
+    html+=`<div class="cmp-sub" style="color:#566">该 Campaign 无 Adgroup 明细（spend=0 不展开）</div>`;
+  }
+  html+='</div>';return html;
+}
+function toggleAgList(btn){
+  const uid=btn.getAttribute('data-uid');const ch=btn.getAttribute('data-ch');const camp=btn.getAttribute('data-camp');
+  const box=document.getElementById('aglist-'+uid);if(!box)return;
+  const open=btn.classList.toggle('open');
+  if(open){
+    const agNames=collectAgNames(ch,camp);
+    btn.textContent='▾ 收起 '+agNames.length+' 个 Adgroup';
+    let h='';
+    agNames.forEach((agn,idx)=>{
+      const agid=uid+'-'+idx;const cagn=agn.replace(/"/g,'&quot;');
+      h+=`<div class="ag-item"><span class="ag-name" data-agid="${agid}" data-ch="${ch.replace(/"/g,'&quot;')}" data-camp="${camp.replace(/"/g,'&quot;')}" data-agn="${cagn}" onclick="toggleAgOne(this)">${agn}</span><div class="ag-detail" id="agdetail-${agid}" style="display:none"></div></div>`;
+    });
+    box.innerHTML=h;box.style.display='';
+  }else{
+    const agNames=collectAgNames(ch,camp);
+    btn.textContent='▸ 展开 '+agNames.length+' 个 Adgroup';
+    box.style.display='none';box.innerHTML='';
+  }
+}
+function toggleAgOne(el){
+  const agid=el.getAttribute('data-agid');const ch=el.getAttribute('data-ch');const camp=el.getAttribute('data-camp');const agn=el.getAttribute('data-agn');
+  const box=document.getElementById('agdetail-'+agid);if(!box)return;
+  const open=el.classList.toggle('open');
+  if(open){ box.innerHTML=cmpTable(pd=>findAgRow(pd,ch,camp,agn)); box.style.display=''; }
+  else{ box.style.display='none';box.innerHTML=''; }
+}
 function toggleCmp(tr){const ch=tr.getAttribute('data-ch');const camp=tr.getAttribute('data-camp');const open=tr.classList.toggle('open');const next=tr.nextElementSibling;if(open){const cmpTr=document.createElement('tr');cmpTr.className='cmp-row';cmpTr.innerHTML=`<td colspan="${tr.children.length}">${cmpCard(ch,camp)}</td>`;tr.parentNode.insertBefore(cmpTr,next);}else{if(next&&next.classList.contains('cmp-row'))next.remove();}}
-function refreshOpenCards(){document.querySelectorAll('tr.clickable.open').forEach(tr=>{const next=tr.nextElementSibling;if(next&&next.classList.contains('cmp-row')){next.querySelector('td').innerHTML=cmpCard(tr.getAttribute('data-ch'),tr.getAttribute('data-camp'));}});}
+function refreshOpenCards(){document.querySelectorAll('tr.clickable.open').forEach(tr=>{const next=tr.nextElementSibling;if(next&&next.classList.contains('cmp-row')){if(next.querySelector('.loading-row')){next.querySelector('td').innerHTML=cmpCard(tr.getAttribute('data-ch'),tr.getAttribute('data-camp'));}}});}
 function render(){const store=ALL[PLATFORM];const d=store['today'];if(d==='loading'||d===undefined){document.getElementById('main').innerHTML=`<div class="loading"><div class="spinner${PLATFORM==='ios'?' ios-spin':''}"></div><br>拉取今日实时数据…</div>`;return;}if(d==='error'){document.getElementById('main').innerHTML='<div class="loading" style="color:#e94560">❌ 今日数据加载失败，请点刷新重试</div>';return;}
   const t=d.total;
   document.getElementById('ib').textContent=`主表：${d.start}（今日实时）  |  拉取：${d.pulled_at}`;

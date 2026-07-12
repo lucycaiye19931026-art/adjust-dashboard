@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Adjust PH_lucy — iOS Channel 看板</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#0d0d1a;color:#e0e0e0;min-height:100vh}
+header{background:linear-gradient(135deg,#1a2e1a,#162116);padding:18px 28px;border-bottom:2px solid #2d5635;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px}
+header h1{font-size:1.25rem;color:#fff}
+header p{font-size:.76rem;color:#88aa88;margin-top:4px}
+.nav-group{display:flex;flex-direction:column;gap:6px;align-items:flex-end}
+.nav-row{display:flex;gap:6px}
+.nav-label{font-size:.65rem;color:#666;text-align:right;padding-right:2px}
+.nav-link{padding:6px 14px;border-radius:8px;background:#1e2e1e;color:#aaa;text-decoration:none;font-size:.78rem;border:1px solid #2d5635;transition:all .18s}
+.nav-link:hover{background:#27ae60;color:#fff;border-color:#27ae60}
+.nav-link.active{background:#27ae60;color:#fff;border-color:#27ae60}
+.nav-link.android{background:#1e1e38;border-color:#2d3561}
+.nav-link.android:hover{background:#e94560;color:#fff;border-color:#e94560}
+.filter-bar{display:flex;gap:9px;padding:13px 28px;background:#111811;border-bottom:1px solid #1e381e;flex-wrap:wrap;align-items:center}
+.filter-bar>span{font-size:.8rem;color:#88aa88}
+.btn-p{padding:6px 16px;border-radius:18px;border:1.5px solid #2d5635;background:transparent;color:#888;cursor:pointer;font-size:.8rem;transition:all .18s}
+.btn-p:hover{border-color:#27ae60;color:#27ae60}
+.btn-p.active{background:#27ae60;border-color:#27ae60;color:#fff;font-weight:700}
+.info-bar{margin-left:auto;font-size:.72rem;color:#446644}
+.refresh-btn{padding:5px 14px;border-radius:14px;border:1px solid #2d5635;background:transparent;color:#888;cursor:pointer;font-size:.76rem;transition:all .18s}
+.refresh-btn:hover{border-color:#2ecc71;color:#2ecc71}
+main{padding:20px 28px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:11px;margin-bottom:20px}
+.card{background:#13231a;border-radius:10px;padding:14px 16px;border:1px solid #224433}
+.card .lbl{font-size:.68rem;color:#88aa88;text-transform:uppercase;letter-spacing:.5px}
+.card .val{font-size:1.4rem;font-weight:700;margin-top:6px}
+.v-w{color:#fff}.v-r{color:#ff6b6b}.v-b{color:#53d8fb}.v-y{color:#ffd93d}.v-g{color:#2ecc71}
+.sec{display:flex;align-items:center;gap:8px;margin:18px 0 8px;font-size:.78rem;font-weight:600;color:#aaa;text-transform:uppercase;letter-spacing:.4px}
+.dot{width:8px;height:8px;border-radius:50%}
+.d-r{background:#27ae60}.d-g{background:#2ecc71}.d-gr{background:#445544}
+.tbl-wrap{overflow-x:auto;border-radius:8px;border:1px solid #1e381e;margin-bottom:4px}
+table{width:100%;border-collapse:collapse;font-size:.78rem}
+thead th{background:#142a1a;padding:9px 11px;text-align:right;color:#668866;font-weight:600;font-size:.68rem;text-transform:uppercase;white-space:nowrap}
+thead th:first-child{text-align:left;padding-left:14px;min-width:170px}
+tbody tr{border-top:1px solid #182818;transition:background .1s}
+tbody tr:hover{background:rgba(255,255,255,.02)}
+td{padding:8px 11px;text-align:right;white-space:nowrap}
+td:first-child{text-align:left;padding-left:14px}
+.r-total td{background:rgba(13,119,60,.2);font-weight:700}
+.r-total td:first-child{color:#53d8fb}
+.r-key td{background:rgba(10,40,20,.5)}
+.r-key td:first-child{color:#fff;font-weight:600}
+.r-key td:first-child::before{content:"★ ";color:#ffd93d;font-size:.7rem}
+.r-other td{color:#999}
+.r-other:nth-child(even) td{background:rgba(255,255,255,.01)}
+.c-cost{color:#ff8080!important}.c-loan{color:#53d8fb!important}.c-na{color:#334433!important}
+.badge{display:inline-block;padding:1px 8px;border-radius:8px;font-size:.72rem;font-weight:600}
+.b-lo{background:rgba(46,204,113,.14);color:#2ecc71}
+.b-mi{background:rgba(255,150,80,.12);color:#ff9050}
+.b-hi{background:rgba(233,69,96,.18);color:#e94560}
+.formula{font-size:.66rem;color:#778855;margin-left:3px;font-style:italic}
+.loading{text-align:center;padding:50px;color:#445544}
+.spinner{display:inline-block;width:24px;height:24px;border:3px solid #2d5635;border-top-color:#27ae60;border-radius:50%;animation:spin .7s linear infinite;margin-bottom:8px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.note-tag{font-size:.66rem;padding:1px 6px;border-radius:5px;background:#1e381e;color:#88aa88;margin-left:6px;vertical-align:middle}
+.ios-badge{display:inline-block;padding:2px 8px;border-radius:10px;background:rgba(39,174,96,.2);color:#27ae60;font-size:.7rem;font-weight:700;margin-left:8px;border:1px solid #27ae60}
+tbody tr.clickable{cursor:pointer}
+tbody tr.clickable td:first-child::before{content:"\25B8 ";color:#668866;font-weight:700}
+tbody tr.clickable.open td:first-child::before{content:"\25BE ";color:#27ae60}
+.cmp-row td{padding:0!important;border:none!important;background:transparent!important}
+.cmp-card{margin:4px 10px 12px;background:#101f14;border:1px solid #264e33;border-radius:10px;padding:12px 14px}
+.cmp-title{font-size:.72rem;color:#88aa88;margin-bottom:9px;letter-spacing:.4px}
+.cmp-grid{overflow-x:auto}
+.cmp-tbl{width:100%;border-collapse:collapse;font-size:.75rem;min-width:560px}
+.cmp-tbl th{background:#183a24;color:#9aa;font-size:.62rem;text-transform:uppercase;padding:6px 11px;text-align:right;font-weight:600;white-space:nowrap}
+.cmp-tbl th:first-child{text-align:left;color:#ffd93d}
+.cmp-tbl td{padding:6px 11px;text-align:right;color:#ccc;white-space:nowrap}
+.cmp-tbl td:first-child{text-align:left;color:#ddd;font-weight:600}
+.cmp-tbl tr+tr{border-top:1px solid rgba(255,255,255,.05)}
+.cmp-tbl tr.loading-row td{color:#566;text-align:center}
+::-webkit-scrollbar{height:4px;width:4px}
+::-webkit-scrollbar-thumb{background:#2d5635;border-radius:2px}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>📊 Adjust PH_lucy — iOS Channel 看板 <span class="ios-badge">iOS</span></h1>
+    <p>Attribution source: First · Cohort maturity: Immature · UTC+8 · App: PesoloanNew iOS</p>
+  </div>
+  <div class="nav-group">
+    <div class="nav-label">iOS 端</div>
+    <div class="nav-row">
+      <a href="/ios" class="nav-link active">iOS Channel</a>
+      <a href="/ios/campaign" class="nav-link">iOS Campaign</a>
+    </div>
+    <div class="nav-label">Android 端</div>
+    <div class="nav-row">
+      <a href="/" class="nav-link android">Android Channel</a>
+      <a href="/campaign" class="nav-link android">Android Campaign</a>
+    </div>
+  </div>
+</header>
+<div class="filter-bar">
+  <span>📅 主表 = <b style="color:#27ae60">今日实时</b> · 点击任意渠道行查看 5 日期对比</span>
+  <button class="refresh-btn" onclick="refresh()">🔄 刷新</button>
+  <span class="info-bar" id="ib">—</span>
+</div>
+<main id="main"><div class="loading"><div class="spinner"></div><br>加载中…</div></main>
+<script>
+const IOS_KEY_CH=['Facebook','TikTok for Business','Apple'];
+const DATES=[['today','今日'],['yesterday','昨日'],['3days','近3天'],['7days','近7天'],['month','本月']];
+const CMP_METRICS=[['clicks','Clicks'],['installs','Installs'],['cost','Ad Spend'],['register','Register'],['apply','Apply'],['loan','Loan'],['revenue','Revenue'],['cps','CPS']];
+const ALL={};
+const n=v=>v==null?'—':Number(v).toLocaleString();
+const m=v=>(!v&&v!==0)||v===0?'—':'$'+Number(v).toLocaleString('en',{minimumFractionDigits:2,maximumFractionDigits:2});
+const cpsHtml=(v,fixed)=>{if(!v||v===0)return '<span class="c-na">—</span>';const c=v<20?'b-lo':v<30?'b-mi':'b-hi';const tag=fixed?'<span style="font-size:.63rem;color:#aaa880;margin-left:2px">固定</span>':'';return `<span class="badge ${c}">$${Number(v).toFixed(2)}</span>${tag}`;};
+function fmtMetric(mk,v,fixed){if(mk==='cps')return cpsHtml(v,fixed);if(mk==='cost'||mk==='revenue')return m(v);return n(v);}
+function thead(){return `<thead><tr><th style="text-align:left">Channel</th><th>Clicks</th><th>Installs</th><th>Ad Spend($)</th><th>Register</th><th>Apply</th><th>Loan</th><th>Revenue($)</th><th>CPS</th></tr></thead>`;}
+function mkRow(r,cls){const costD=r.cost_formula?`${m(r.cost)}<span class="formula">${r.cost_formula}</span>`:m(r.cost);const ch=(r.channel||'—');const safe=ch.replace(/"/g,'&quot;');return `<tr class="${cls} clickable" data-ch="${safe}" onclick="toggleCmp(this)"><td>${ch}</td><td>${n(r.clicks)}</td><td>${n(r.installs)}</td><td class="c-cost">${costD}</td><td>${n(r.register)}</td><td>${n(r.apply)}</td><td class="c-loan">${n(r.loan)}</td><td>${m(r.revenue)}</td><td>${cpsHtml(r.cps,r.cps_fixed)}</td></tr>`;}
+function findChannelRow(pdata,ch){if(!pdata||pdata==='loading'||pdata==='error')return null;if(ch==='__TOTAL__')return pdata.total;return (pdata.by_channel||[]).find(r=>r.channel===ch)||null;}
+function cmpCard(ch,title){let head='<th>日期</th>'+CMP_METRICS.map(a=>`<th>${a[1]}</th>`).join('');let body='';for(const dd of DATES){const dk=dd[0],dl=dd[1];const pdata=ALL[dk];if(pdata==='loading'||pdata===undefined){body+=`<tr class="loading-row"><td>${dl}</td><td colspan="${CMP_METRICS.length}">⏳ 加载中…</td></tr>`;continue;}if(pdata==='error'){body+=`<tr class="loading-row"><td>${dl}</td><td colspan="${CMP_METRICS.length}" style="color:#e94560">❌ 加载失败</td></tr>`;continue;}const r=findChannelRow(pdata,ch)||{};body+=`<tr><td>${dl}</td>`+CMP_METRICS.map(a=>`<td>${fmtMetric(a[0],r[a[0]],r.cps_fixed)}</td>`).join('')+'</tr>';}return `<div class="cmp-card"><div class="cmp-title">📊 ${title} — 5 日期对比（全指标）</div><div class="cmp-grid"><table class="cmp-tbl"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div></div>`;}
+function toggleCmp(tr){const ch=tr.getAttribute('data-ch');const title=ch==='__TOTAL__'?'iOS 全渠道汇总 Total':ch;const open=tr.classList.toggle('open');const next=tr.nextElementSibling;if(open){const cmpTr=document.createElement('tr');cmpTr.className='cmp-row';cmpTr.innerHTML=`<td colspan="${tr.children.length}">${cmpCard(ch,title)}</td>`;tr.parentNode.insertBefore(cmpTr,next);}else{if(next&&next.classList.contains('cmp-row'))next.remove();}}
+function refreshOpenCards(){document.querySelectorAll('tr.clickable.open').forEach(tr=>{const next=tr.nextElementSibling;if(next&&next.classList.contains('cmp-row')){const ch=tr.getAttribute('data-ch');const title=ch==='__TOTAL__'?'iOS 全渠道汇总 Total':ch;next.querySelector('td').innerHTML=cmpCard(ch,title);}});}
+function render(){const d=ALL['today'];if(d==='loading'||d===undefined){document.getElementById('main').innerHTML='<div class="loading"><div class="spinner"></div><br>拉取今日实时数据…</div>';return;}if(d==='error'){document.getElementById('main').innerHTML='<div class="loading" style="color:#e94560">❌ 今日数据加载失败，请点刷新重试</div>';return;}
+  const t=d.total;
+  document.getElementById('ib').textContent=`主表：${d.start}（今日实时）  |  拉取：${d.pulled_at}`;
+  const keys=d.by_channel.filter(r=>IOS_KEY_CH.includes(r.channel));
+  const others=d.by_channel.filter(r=>!IOS_KEY_CH.includes(r.channel));
+  const totalRow=`<tr class="r-total clickable" data-ch="__TOTAL__" onclick="toggleCmp(this)"><td>🔢 iOS ALL CHANNELS TOTAL</td><td>${n(t.clicks)}</td><td>${n(t.installs)}</td><td class="c-cost">${m(t.cost)}</td><td>${n(t.register)}</td><td>${n(t.apply)}</td><td class="c-loan">${n(t.loan)}</td><td>${m(t.revenue)}</td><td>${cpsHtml(t.cps,false)}</td></tr>`;
+  document.getElementById('main').innerHTML=`
+    <div class="cards">
+      <div class="card"><div class="lbl">Installs</div><div class="val v-g">${n(t.installs)}</div></div>
+      <div class="card"><div class="lbl">Ad Spend</div><div class="val v-r">${m(t.cost)}</div></div>
+      <div class="card"><div class="lbl">Register</div><div class="val v-w">${n(t.register)}</div></div>
+      <div class="card"><div class="lbl">Apply Loan</div><div class="val v-w">${n(t.apply)}</div></div>
+      <div class="card"><div class="lbl">Loan Success</div><div class="val v-b">${n(t.loan)}</div></div>
+      <div class="card"><div class="lbl">Revenue</div><div class="val v-w">${m(t.revenue)}</div></div>
+      <div class="card"><div class="lbl">CPS</div><div class="val v-y">${t.cps?'$'+t.cps.toFixed(2):'—'}</div></div>
+    </div>
+    <div class="sec"><span class="dot d-g"></span>iOS 核心渠道汇总（点击看 5 日对比）</div>
+    <div class="tbl-wrap"><table>${thead()}<tbody>${totalRow}</tbody></table></div>
+    <div class="sec"><span class="dot d-r"></span>iOS 核心渠道明细（点击行看 5 日对比）</div>
+    <div class="tbl-wrap"><table>${thead()}<tbody>${keys.map(r=>mkRow(r,'r-key')).join('')}</tbody></table></div>
+    ${others.length?`<div class="sec"><span class="dot d-gr"></span>其他渠道（${others.length} 条，点击看 5 日对比）</div><div class="tbl-wrap"><table>${thead()}<tbody>${others.map(r=>mkRow(r,'r-other')).join('')}</tbody></table></div>`:''}`;
+}
+function fetchPeriod(period){ALL[period]='loading';return fetch('/api/ios/channel?period='+period).then(r=>r.json()).then(d=>{ALL[period]=d.ok?d:'error';}).catch(()=>{ALL[period]='error';}).then(()=>{if(period==='today')render();else refreshOpenCards();});}
+function loadAll(){fetchPeriod('today');['yesterday','3days','7days','month'].forEach(p=>fetchPeriod(p));}
+function refresh(){for(const k in ALL)delete ALL[k];document.getElementById('main').innerHTML='<div class="loading"><div class="spinner"></div><br>拉取中…</div>';loadAll();}
+loadAll();
+</script>
+</body>
+</html>

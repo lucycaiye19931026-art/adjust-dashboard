@@ -70,6 +70,20 @@ td:first-child{text-align:left;padding-left:14px}
 .platform-badge{display:inline-block;padding:2px 9px;border-radius:10px;font-size:.7rem;font-weight:700;margin-left:8px;vertical-align:middle}
 .and-badge{background:rgba(233,69,96,.18);color:#e94560;border:1px solid #e94560}
 .ios-badge{background:rgba(39,174,96,.18);color:#27ae60;border:1px solid #27ae60}
+tbody tr.clickable{cursor:pointer}
+tbody tr.clickable td:first-child::before{content:"\25B8 ";color:#666688;font-weight:700}
+tbody tr.clickable.open td:first-child::before{content:"\25BE ";color:#e94560}
+.cmp-row td{padding:0!important;border:none!important;background:transparent!important}
+.cmp-card{margin:4px 10px 12px;background:#10102a;border:1px solid #26264e;border-radius:10px;padding:12px 14px}
+.cmp-title{font-size:.72rem;color:#8888aa;margin-bottom:9px;letter-spacing:.4px}
+.cmp-grid{overflow-x:auto}
+.cmp-tbl{width:100%;border-collapse:collapse;font-size:.75rem;min-width:560px}
+.cmp-tbl th{background:#181840;color:#99a;font-size:.62rem;text-transform:uppercase;padding:6px 11px;text-align:right;font-weight:600;white-space:nowrap}
+.cmp-tbl th:first-child{text-align:left;color:#ffd93d}
+.cmp-tbl td{padding:6px 11px;text-align:right;color:#ccc;white-space:nowrap}
+.cmp-tbl td:first-child{text-align:left;color:#ddd;font-weight:600}
+.cmp-tbl tr+tr{border-top:1px solid rgba(255,255,255,.05)}
+.cmp-tbl tr.loading-row td{color:#556;text-align:center}
 ::-webkit-scrollbar{height:4px;width:4px}
 ::-webkit-scrollbar-thumb{background:#2d3561;border-radius:2px}
 </style>
@@ -91,51 +105,38 @@ td:first-child{text-align:left;padding-left:14px}
   <button class="pt-tab" id="tab-ios" onclick="switchPlatform('ios')">🍎 iOS</button>
 </div>
 <div class="filter-bar" id="filter-bar">
-  <span>📅</span>
-  <button class="btn-p active" onclick="sw(this,'today')">今日实时</button>
-  <button class="btn-p" onclick="sw(this,'yesterday')">昨日数据</button>
-  <button class="btn-p" onclick="sw(this,'3days')">近 3 天</button>
-  <button class="btn-p" onclick="sw(this,'7days')">近 7 天</button>
-  <button class="btn-p" onclick="sw(this,'month')">本月</button>
+  <span>📅 主表 = <b style="color:#e94560">今日实时</b> · 点击任意渠道行查看 5 日期对比</span>
   <button class="refresh-btn" onclick="refresh()">🔄 刷新</button>
   <span class="info-bar" id="ib">—</span>
 </div>
 <main id="main"><div class="loading"><div class="spinner"></div><br>加载中…</div></main>
 <script>
-let CUR = 'today';
-let PLATFORM = 'android'; // 'android' | 'ios'
-const IOS_KEY_CH = ['Facebook','TikTok for Business','Apple'];
-const AND_KEY_CH = ['Google Ads','Facebook','TikTok for Business'];
-
-const n  = v => v==null?'—':Number(v).toLocaleString();
-const m  = v => (!v&&v!==0)||v===0?'—':'$'+Number(v).toLocaleString('en',{minimumFractionDigits:2,maximumFractionDigits:2});
-const cpsHtml=(v,fixed)=>{
-  if(!v||v===0) return '<span class="c-na">—</span>';
-  const c=v<20?'b-lo':v<30?'b-mi':'b-hi';
-  const tag=fixed?'<span style="font-size:.63rem;color:#aaa880;margin-left:2px">固定</span>':'';
-  return `<span class="badge ${c}">$${Number(v).toFixed(2)}</span>${tag}`;
-};
-function thead(hasDay){
-  const dc=hasDay?'<th style="text-align:left">Date</th>':'';
-  return `<thead><tr><th style="text-align:left">Channel</th>${dc}<th>Clicks</th><th>Installs</th><th>Ad Spend($)</th><th>Register</th><th>Apply</th><th>Loan</th><th>Revenue($)</th><th>CPS</th></tr></thead>`;
-}
-function mkRow(r,cls,hasDay){
-  const dc=hasDay?`<td style="text-align:left;color:#555577;font-size:.73rem">${r.day||''}</td>`:'';
-  const costD=r.cost_formula?`${m(r.cost)}<span class="formula">${r.cost_formula}</span>`:m(r.cost);
-  return `<tr class="${cls}"><td>${r.channel||'—'}</td>${dc}<td>${n(r.clicks)}</td><td>${n(r.installs)}</td><td class="c-cost">${costD}</td><td>${n(r.register)}</td><td>${n(r.apply)}</td><td class="c-loan">${n(r.loan)}</td><td>${m(r.revenue)}</td><td>${cpsHtml(r.cps,r.cps_fixed)}</td></tr>`;
-}
-function isKey(ch){ return PLATFORM==='ios'? IOS_KEY_CH.includes(ch) : AND_KEY_CH.includes(ch); }
-function render(d){
-  const t=d.total, hasDay=d.has_day;
-  const tag=hasDay?'<span class="note-tag">按日</span>':'<span class="note-tag">汇总</span>';
-  const dr=d.start===d.end?d.start:`${d.start} ~ ${d.end}`;
-  document.getElementById('ib').textContent=`日期：${dr}  |  拉取：${d.pulled_at}`;
-  const keys   = d.by_channel.filter(r=>isKey(r.channel));
-  const others = d.by_channel.filter(r=>!isKey(r.channel));
-  const label  = PLATFORM==='ios'?'iOS 核心渠道':'三大核心渠道';
-  const totalLabel = PLATFORM==='ios'?'🍎 iOS ALL CHANNELS TOTAL':'🔢 ALL CHANNELS TOTAL';
-  const totalRow=`<tr class="r-total"><td>${totalLabel}</td>${hasDay?'<td>—</td>':''}<td>${n(t.clicks)}</td><td>${n(t.installs)}</td><td class="c-cost">${m(t.cost)}</td><td>${n(t.register)}</td><td>${n(t.apply)}</td><td class="c-loan">${n(t.loan)}</td><td>${m(t.revenue)}</td><td>${cpsHtml(t.cps,false)}</td></tr>`;
-  const iosCard = PLATFORM==='ios'?' ios-card':'';
+let PLATFORM='android';
+const IOS_KEY_CH=['Facebook','TikTok for Business','Apple'];
+const AND_KEY_CH=['Google Ads','Facebook','TikTok for Business'];
+const DATES=[['today','今日'],['yesterday','昨日'],['3days','近3天'],['7days','近7天'],['month','本月']];
+const CMP_METRICS=[['clicks','Clicks'],['installs','Installs'],['cost','Ad Spend'],['register','Register'],['apply','Apply'],['loan','Loan'],['revenue','Revenue'],['cps','CPS']];
+const ALL={android:{},ios:{}};
+const n=v=>v==null?'—':Number(v).toLocaleString();
+const m=v=>(!v&&v!==0)||v===0?'—':'$'+Number(v).toLocaleString('en',{minimumFractionDigits:2,maximumFractionDigits:2});
+const cpsHtml=(v,fixed)=>{if(!v||v===0)return '<span class="c-na">—</span>';const c=v<20?'b-lo':v<30?'b-mi':'b-hi';const tag=fixed?'<span style="font-size:.63rem;color:#aaa880;margin-left:2px">固定</span>':'';return `<span class="badge ${c}">$${Number(v).toFixed(2)}</span>${tag}`;};
+function fmtMetric(mk,v,fixed){if(mk==='cps')return cpsHtml(v,fixed);if(mk==='cost'||mk==='revenue')return m(v);return n(v);}
+function thead(){return `<thead><tr><th style="text-align:left">Channel</th><th>Clicks</th><th>Installs</th><th>Ad Spend($)</th><th>Register</th><th>Apply</th><th>Loan</th><th>Revenue($)</th><th>CPS</th></tr></thead>`;}
+function mkRow(r,cls){const costD=r.cost_formula?`${m(r.cost)}<span class="formula">${r.cost_formula}</span>`:m(r.cost);const ch=(r.channel||'—');const safe=ch.replace(/"/g,'&quot;');return `<tr class="${cls} clickable" data-ch="${safe}" onclick="toggleCmp(this)"><td>${ch}</td><td>${n(r.clicks)}</td><td>${n(r.installs)}</td><td class="c-cost">${costD}</td><td>${n(r.register)}</td><td>${n(r.apply)}</td><td class="c-loan">${n(r.loan)}</td><td>${m(r.revenue)}</td><td>${cpsHtml(r.cps,r.cps_fixed)}</td></tr>`;}
+function isKey(ch){return PLATFORM==='ios'?IOS_KEY_CH.includes(ch):AND_KEY_CH.includes(ch);}
+function findChannelRow(pdata,ch){if(!pdata||pdata==='loading'||pdata==='error')return null;if(ch==='__TOTAL__')return pdata.total;return (pdata.by_channel||[]).find(r=>r.channel===ch)||null;}
+function cmpCard(ch,title){const store=ALL[PLATFORM];let head='<th>日期</th>'+CMP_METRICS.map(a=>`<th>${a[1]}</th>`).join('');let body='';for(const dd of DATES){const dk=dd[0],dl=dd[1];const pdata=store[dk];if(pdata==='loading'||pdata===undefined){body+=`<tr class="loading-row"><td>${dl}</td><td colspan="${CMP_METRICS.length}">⏳ 加载中…</td></tr>`;continue;}if(pdata==='error'){body+=`<tr class="loading-row"><td>${dl}</td><td colspan="${CMP_METRICS.length}" style="color:#e94560">❌ 加载失败</td></tr>`;continue;}const r=findChannelRow(pdata,ch)||{};body+=`<tr><td>${dl}</td>`+CMP_METRICS.map(a=>`<td>${fmtMetric(a[0],r[a[0]],r.cps_fixed)}</td>`).join('')+'</tr>';}return `<div class="cmp-card"><div class="cmp-title">📊 ${title} — 5 日期对比（全指标）</div><div class="cmp-grid"><table class="cmp-tbl"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div></div>`;}
+function toggleCmp(tr){const ch=tr.getAttribute('data-ch');const title=ch==='__TOTAL__'?'全渠道汇总 Total':ch;const open=tr.classList.toggle('open');const next=tr.nextElementSibling;if(open){const cmpTr=document.createElement('tr');cmpTr.className='cmp-row';cmpTr.innerHTML=`<td colspan="${tr.children.length}">${cmpCard(ch,title)}</td>`;tr.parentNode.insertBefore(cmpTr,next);}else{if(next&&next.classList.contains('cmp-row'))next.remove();}}
+function refreshOpenCards(){document.querySelectorAll('tr.clickable.open').forEach(tr=>{const next=tr.nextElementSibling;if(next&&next.classList.contains('cmp-row')){const ch=tr.getAttribute('data-ch');const title=ch==='__TOTAL__'?'全渠道汇总 Total':ch;next.querySelector('td').innerHTML=cmpCard(ch,title);}});}
+function render(){const store=ALL[PLATFORM];const d=store['today'];if(d==='loading'||d===undefined){document.getElementById('main').innerHTML=`<div class="loading"><div class="spinner${PLATFORM==='ios'?' ios-spin':''}"></div><br>拉取今日实时数据…</div>`;return;}if(d==='error'){document.getElementById('main').innerHTML='<div class="loading" style="color:#e94560">❌ 今日数据加载失败，请点刷新重试</div>';return;}
+  const t=d.total;
+  document.getElementById('ib').textContent=`主表：${d.start}（今日实时）  |  拉取：${d.pulled_at}`;
+  const keys=d.by_channel.filter(r=>isKey(r.channel));
+  const others=d.by_channel.filter(r=>!isKey(r.channel));
+  const label=PLATFORM==='ios'?'iOS 核心渠道':'三大核心渠道';
+  const totalLabel=PLATFORM==='ios'?'🍎 iOS ALL CHANNELS TOTAL':'🔢 ALL CHANNELS TOTAL';
+  const totalRow=`<tr class="r-total clickable" data-ch="__TOTAL__" onclick="toggleCmp(this)"><td>${totalLabel}</td><td>${n(t.clicks)}</td><td>${n(t.installs)}</td><td class="c-cost">${m(t.cost)}</td><td>${n(t.register)}</td><td>${n(t.apply)}</td><td class="c-loan">${n(t.loan)}</td><td>${m(t.revenue)}</td><td>${cpsHtml(t.cps,false)}</td></tr>`;
+  const iosCard=PLATFORM==='ios'?' ios-card':'';
   document.getElementById('main').innerHTML=`
     <div class="cards">
       <div class="card${iosCard}"><div class="lbl">Installs</div><div class="val v-g">${n(t.installs)}</div></div>
@@ -146,57 +147,19 @@ function render(d){
       <div class="card${iosCard}"><div class="lbl">Revenue</div><div class="val v-w">${m(t.revenue)}</div></div>
       <div class="card${iosCard}"><div class="lbl">CPS</div><div class="val v-y">${t.cps?'$'+t.cps.toFixed(2):'—'}</div></div>
     </div>
-    <div class="sec"><span class="dot d-g"></span>全渠道汇总 ${tag}</div>
-    <div class="tbl-wrap"><table>${thead(hasDay)}<tbody>${totalRow}</tbody></table></div>
-    <div class="sec"><span class="dot d-r"></span>${label} ${tag}</div>
-    <div class="tbl-wrap"><table>${thead(hasDay)}<tbody>${keys.map(r=>mkRow(r,'r-key',hasDay)).join('')}</tbody></table></div>
-    ${others.length?`<div class="sec"><span class="dot d-gr"></span>其他渠道（${others.length} 条）${tag}</div>
-    <div class="tbl-wrap"><table>${thead(hasDay)}<tbody>${others.map(r=>mkRow(r,'r-other',hasDay)).join('')}</tbody></table></div>`:''}
+    <div class="sec"><span class="dot d-g"></span>全渠道汇总（点击看 5 日对比）</div>
+    <div class="tbl-wrap"><table>${thead()}<tbody>${totalRow}</tbody></table></div>
+    <div class="sec"><span class="dot d-r"></span>${label}（点击行看 5 日对比）</div>
+    <div class="tbl-wrap"><table>${thead()}<tbody>${keys.map(r=>mkRow(r,'r-key')).join('')}</tbody></table></div>
+    ${others.length?`<div class="sec"><span class="dot d-gr"></span>其他渠道（${others.length} 条，点击看 5 日对比）</div><div class="tbl-wrap"><table>${thead()}<tbody>${others.map(r=>mkRow(r,'r-other')).join('')}</tbody></table></div>`:''}
     ${PLATFORM==='android'?`<div class="footer-note">💡 Ad Spend 估算：茄子快传=loan×4 · CK-loan And=loan×12 · Yundun-and=installs×0.4 · loan_market_2=installs×0.4</div>`:''}`;
 }
-function applyTheme(p){
-  const isIos = p==='ios';
-  // header
-  document.getElementById('hdr-badge').className='platform-badge '+(isIos?'ios-badge':'and-badge');
-  document.getElementById('hdr-badge').textContent=isIos?'iOS':'Android';
-  document.getElementById('hdr-sub').textContent=isIos?
-    'Attribution source: First · Cohort maturity: Immature · UTC+8 · App: PesoloanNew iOS':
-    'Attribution source: First · Cohort maturity: Immature · UTC+8 · App: PesoloanNew Android';
-  // tab
-  document.getElementById('tab-and').className='pt-tab'+(isIos?'':' and-active');
-  document.getElementById('tab-ios').className='pt-tab'+(isIos?' ios-active':'');
-  // period buttons
-  document.querySelectorAll('.btn-p').forEach(b=>{
-    b.classList.toggle('ios-mode', isIos);
-  });
-  // spinner color
-  document.querySelectorAll('.spinner').forEach(s=>s.classList.toggle('ios-spin',isIos));
-}
-async function load(period){
-  document.getElementById('main').innerHTML=`<div class="loading"><div class="spinner${PLATFORM==='ios'?' ios-spin':''}"></div><br>拉取中…</div>`;
-  const api = PLATFORM==='ios'?'/api/ios/channel':'/api/channel';
-  try{
-    const r=await fetch(api+'?period='+period);
-    const d=await r.json();
-    if(!d.ok) throw new Error(d.error);
-    render(d);
-  }catch(e){
-    document.getElementById('main').innerHTML=`<div class="loading" style="color:#e94560">❌ ${e.message}</div>`;
-  }
-}
-function sw(btn,period){
-  CUR=period;
-  document.querySelectorAll('.btn-p').forEach(b=>b.classList.remove('active'));
-  btn.classList.add('active');
-  load(period);
-}
-function refresh(){ load(CUR); }
-function switchPlatform(p){
-  PLATFORM=p;
-  applyTheme(p);
-  load(CUR);
-}
-load('today');
+function applyTheme(p){const isIos=p==='ios';document.getElementById('hdr-badge').className='platform-badge '+(isIos?'ios-badge':'and-badge');document.getElementById('hdr-badge').textContent=isIos?'iOS':'Android';document.getElementById('hdr-sub').textContent=isIos?'Attribution source: First · Cohort maturity: Immature · UTC+8 · App: PesoloanNew iOS':'Attribution source: First · Cohort maturity: Immature · UTC+8 · App: PesoloanNew Android';document.getElementById('tab-and').className='pt-tab'+(isIos?'':' and-active');document.getElementById('tab-ios').className='pt-tab'+(isIos?' ios-active':'');}
+function fetchPeriod(platform,period){const api=platform==='ios'?'/api/ios/channel':'/api/channel';ALL[platform][period]='loading';return fetch(api+'?period='+period).then(r=>r.json()).then(d=>{ALL[platform][period]=d.ok?d:'error';}).catch(()=>{ALL[platform][period]='error';}).then(()=>{if(period==='today'&&platform===PLATFORM)render();else refreshOpenCards();});}
+function loadAll(platform){fetchPeriod(platform,'today');['yesterday','3days','7days','month'].forEach(p=>fetchPeriod(platform,p));}
+function refresh(){ALL[PLATFORM]={};document.getElementById('main').innerHTML=`<div class="loading"><div class="spinner${PLATFORM==='ios'?' ios-spin':''}"></div><br>拉取中…</div>`;loadAll(PLATFORM);}
+function switchPlatform(p){PLATFORM=p;applyTheme(p);if(!ALL[p]['today']){document.getElementById('main').innerHTML=`<div class="loading"><div class="spinner${p==='ios'?' ios-spin':''}"></div><br>拉取中…</div>`;loadAll(p);}else{render();}}
+loadAll('android');
 </script>
 </body>
 </html>

@@ -1306,6 +1306,357 @@ CAMPAIGN_HTML    = open("campaign.html",    encoding="utf-8").read() if __import
 IOS_CHANNEL_HTML  = open("ios_channel.html",  encoding="utf-8").read() if __import__("os").path.exists("ios_channel.html")  else "<h1>ios_channel.html not found</h1>"
 IOS_CAMPAIGN_HTML = open("ios_campaign.html", encoding="utf-8").read() if __import__("os").path.exists("ios_campaign.html") else "<h1>ios_campaign.html not found</h1>"
 
+
+# ══════════════════════════════════════════════════════════════════
+# 内部数据代理接口（Internal Media Data Proxy）
+# 安全边界：媒体 Secret 只从 Render Environment 读取，接口只返回业务数据，
+#           绝不在响应/日志中输出任何 Token / Secret / RefreshToken / 私钥。
+# 认证：请求头 X-API-Key 必须等于环境变量 DASHBOARD_API_KEY（恒定时间比较）。
+# ══════════════════════════════════════════════════════════════════
+import hmac as _hmac
+import time as _time
+
+DASHBOARD_API_KEY = os.environ.get("DASHBOARD_API_KEY", "")
+
+# 账户清单：side / channel / 账户名 / 账户ID / 余额类型说明
+# balance_type: limited(有限预算) / infinite(无限额度) / billing(账单结算) / unknown
+MEDIA_ACCOUNTS = [
+    # ---- Google Ads ----
+    {"side": "android", "channel": "google", "account_name": "飞书-GG-pesoloan-0513-test-1",
+     "account_id": "422-341-0058", "gg_customer_id": "4223410058", "balance_type": "limited"},
+    {"side": "android", "channel": "google", "account_name": "GG-pesoloan-无限额度账户",
+     "account_id": "337-532-5268", "gg_customer_id": "3375325268", "balance_type": "infinite"},
+    # ---- Facebook（Android）----
+    # 账户名由 API 实时获取，account_id 用 act_ 去前缀
+    {"side": "android", "channel": "facebook", "account_name": None, "account_id": "2043458276522117", "fb_act": "act_2043458276522117", "balance_type": "unknown"},
+    {"side": "android", "channel": "facebook", "account_name": None, "account_id": "1338744840870824", "fb_act": "act_1338744840870824", "balance_type": "unknown"},
+    {"side": "android", "channel": "facebook", "account_name": None, "account_id": "554870820824463",  "fb_act": "act_554870820824463",  "balance_type": "unknown"},
+    {"side": "android", "channel": "facebook", "account_name": None, "account_id": "1763443588125609", "fb_act": "act_1763443588125609", "balance_type": "unknown"},
+    {"side": "android", "channel": "facebook", "account_name": None, "account_id": "4425161567801548", "fb_act": "act_4425161567801548", "balance_type": "unknown"},
+    {"side": "android", "channel": "facebook", "account_name": None, "account_id": "3511882642320376", "fb_act": "act_3511882642320376", "balance_type": "unknown"},
+    {"side": "android", "channel": "facebook", "account_name": None, "account_id": "1654205562363513", "fb_act": "act_1654205562363513", "balance_type": "unknown"},
+    # ---- Facebook（iOS）----
+    {"side": "ios", "channel": "facebook", "account_name": None, "account_id": "826668223504196",  "fb_act": "act_826668223504196",  "balance_type": "unknown"},
+    {"side": "ios", "channel": "facebook", "account_name": None, "account_id": "485941130935481",  "fb_act": "act_485941130935481",  "balance_type": "unknown"},
+    {"side": "ios", "channel": "facebook", "account_name": None, "account_id": "1050911951210157", "fb_act": "act_1050911951210157", "balance_type": "unknown"},
+    {"side": "ios", "channel": "facebook", "account_name": None, "account_id": "2487386801730510", "fb_act": "act_2487386801730510", "balance_type": "unknown"},
+    # ---- TikTok（Android / iOS）----
+    {"side": "android", "channel": "tiktok", "account_name": None, "account_id": TT_ADV_ID,     "tt_adv": TT_ADV_ID,     "balance_type": "unknown"},
+    {"side": "ios",     "channel": "tiktok", "account_name": None, "account_id": TT_IOS_ADV_ID, "tt_adv": TT_IOS_ADV_ID, "balance_type": "unknown"},
+    # ---- Apple Search Ads ----
+    {"side": "ios", "channel": "asa", "account_name": "Apple Search Ads", "account_id": "asa-org", "balance_type": "billing"},
+]
+
+_proxy_cache = {"balances": None, "balances_ts": 0}
+_PROXY_CACHE_TTL = 300  # 5 分钟
+
+
+def _proxy_now_iso():
+    return now8().strftime("%Y-%m-%dT%H:%M:%S+08:00")
+
+
+def _require_api_key():
+    """校验 X-API-Key。缺失→401；不匹配→403；正确→None(放行)。"""
+    provided = request.headers.get("X-API-Key", "")
+    if not provided:
+        return jsonify({"ok": False, "error": "missing X-API-Key"}), 401
+    if not DASHBOARD_API_KEY or not _hmac.compare_digest(provided, DASHBOARD_API_KEY):
+        return jsonify({"ok": False, "error": "invalid API key"}), 403
+    return None
+
+
+def _last7_range_manila():
+    """最近7个完整自然日（不含今天），UTC+8/Asia/Manila 口径。返回 (since, until)。"""
+    t = now8()
+    until = (t - timedelta(days=1)).strftime("%Y-%m-%d")
+    since = (t - timedelta(days=7)).strftime("%Y-%m-%d")
+    return since, until
+
+
+# ── 各媒体 7 日消耗（用于余额预警） ──────────────────────────
+def _fb_spend_7d(act_id):
+    since, until = _last7_range_manila()
+    try:
+        r = requests.get(f"{FB_BASE}/{act_id}/insights", timeout=20, params={
+            "access_token": get_fb_token(),
+            "fields": "spend",
+            "time_range": _json.dumps({"since": since, "until": until}),
+            "level": "account",
+        })
+        if r.status_code == 200:
+            data = r.json().get("data", [])
+            return round(float(data[0].get("spend", 0)), 2) if data else 0.0
+    except Exception:
+        pass
+    return 0.0
+
+
+def _tt_spend_7d(adv_id):
+    since, until = _last7_range_manila()
+    try:
+        r = requests.get(f"{TT_BASE}/report/integrated/get/",
+                         headers={"Access-Token": TT_ACCESS_TOKEN}, timeout=20,
+                         params={
+                             "advertiser_id": adv_id,
+                             "report_type": "BASIC",
+                             "data_level": "AUCTION_ADVERTISER",
+                             "dimensions": _json.dumps(["advertiser_id"]),
+                             "metrics": _json.dumps(["spend"]),
+                             "start_date": since, "end_date": until,
+                         })
+        d = r.json()
+        if d.get("code") == 0:
+            lst = d.get("data", {}).get("list", [])
+            return round(sum(float(x.get("metrics", {}).get("spend", 0) or 0) for x in lst), 2)
+    except Exception:
+        pass
+    return 0.0
+
+
+def _gg_spend_7d(customer_id):
+    since, until = _last7_range_manila()
+    token = _gg_get_access_token()
+    if not token:
+        return 0.0
+    headers = {"Authorization": f"Bearer {token}", "developer-token": GG_DEVELOPER_TOKEN,
+               "login-customer-id": GG_MCC_ID, "Content-Type": "application/json"}
+    q = ("SELECT metrics.cost_micros FROM customer "
+         f"WHERE segments.date BETWEEN '{since}' AND '{until}'")
+    try:
+        url = f"https://googleads.googleapis.com/{GG_API_VER}/customers/{customer_id}/googleAds:search"
+        resp = requests.post(url, headers=headers, json={"query": q}, timeout=15)
+        if resp.status_code == 200:
+            rows = resp.json().get("results", [])
+            return round(sum(int(x.get("metrics", {}).get("costMicros", 0)) / 1e6 for x in rows), 2)
+    except Exception:
+        pass
+    return 0.0
+
+
+def _calc_warning(balance, spend_7d, balance_supported):
+    """统一计算 7日均消 / 预警阈值 / 可用天数 / 是否预警。"""
+    avg = round(spend_7d / 7.0, 2) if spend_7d else 0.0
+    out = {"spend_7d": round(spend_7d, 2), "avg_daily_spend_7d": avg,
+           "warning_threshold": None, "available_days": None, "warning": False}
+    if balance_supported and balance is not None and avg > 0:
+        thr = round(avg * 7, 2)
+        out["warning_threshold"] = thr
+        out["available_days"] = round(balance / avg, 2)
+        out["warning"] = balance < thr
+    return out
+
+
+# ── 各账户余额拉取（单账户失败不影响整体） ──────────────────
+def _balance_facebook(acc):
+    row = {**{k: acc.get(k) for k in ("side", "channel", "account_name", "account_id", "balance_type")},
+           "data_time": _proxy_now_iso(), "source_status": "ok", "source_error": None}
+    try:
+        r = requests.get(f"{FB_BASE}/{acc['fb_act']}", timeout=20, params={
+            "access_token": get_fb_token(),
+            "fields": "name,account_id,account_status,currency,balance,amount_spent",
+        })
+        if r.status_code != 200:
+            row["source_status"] = "error"
+            row["source_error"] = f"fb http {r.status_code}"
+            return row
+        j = r.json()
+        row["account_name"] = j.get("name") or acc.get("account_name")
+        row["currency"] = j.get("currency")
+        row["account_status"] = str(j.get("account_status", ""))
+        # Facebook balance 单位为最小货币单位（分），需要 /100；部分结算方式不返回
+        bal_raw = j.get("balance", None)
+        if bal_raw is None:
+            row["balance"] = None
+            row["balance_supported"] = False
+            row["balance_note"] = "该账户结算方式不支持通过API获取可充值余额"
+        else:
+            row["balance"] = round(int(bal_raw) / 100.0, 2)
+            row["balance_supported"] = True
+        sp = _fb_spend_7d(acc["fb_act"])
+        row.update(_calc_warning(row.get("balance"), sp, row.get("balance_supported", False)))
+    except Exception as e:
+        row["source_status"] = "error"
+        row["source_error"] = "fb exception"
+    return row
+
+
+def _balance_tiktok(acc):
+    row = {**{k: acc.get(k) for k in ("side", "channel", "account_name", "account_id", "balance_type")},
+           "data_time": _proxy_now_iso(), "source_status": "ok", "source_error": None}
+    try:
+        r = requests.get(f"{TT_BASE}/advertiser/info/",
+                         headers={"Access-Token": TT_ACCESS_TOKEN}, timeout=20,
+                         params={"advertiser_ids": _json.dumps([acc["tt_adv"]])})
+        d = r.json()
+        if d.get("code") != 0:
+            row["source_status"] = "error"
+            row["source_error"] = f"tt code {d.get('code')}"
+            return row
+        lst = d.get("data", {}).get("list", []) or d.get("data", [])
+        info = lst[0] if lst else {}
+        row["account_name"] = info.get("name") or acc.get("account_name")
+        row["currency"] = info.get("currency")
+        row["account_status"] = str(info.get("status", ""))
+        bal = info.get("balance", None)
+        if bal is None:
+            row["balance"] = None
+            row["balance_supported"] = False
+            row["balance_note"] = "该账户结算方式不支持通过API获取可充值余额"
+        else:
+            row["balance"] = round(float(bal), 2)
+            row["balance_supported"] = True
+        sp = _tt_spend_7d(acc["tt_adv"])
+        row.update(_calc_warning(row.get("balance"), sp, row.get("balance_supported", False)))
+    except Exception:
+        row["source_status"] = "error"
+        row["source_error"] = "tt exception"
+    return row
+
+
+def _balance_google(acc):
+    row = {**{k: acc.get(k) for k in ("side", "channel", "account_name", "account_id", "balance_type")},
+           "data_time": _proxy_now_iso(), "source_status": "ok", "source_error": None,
+           "currency": "USD", "account_status": "ENABLED"}
+    cid = acc["gg_customer_id"]
+    try:
+        if acc.get("balance_type") == "infinite":
+            # 无限额度账户：不拉余额、不预警，仅保留 7日均消
+            row["balance"] = None
+            row["balance_supported"] = True
+            row["warning"] = False
+            sp = _gg_spend_7d(cid)
+            w = _calc_warning(None, sp, False)
+            row["spend_7d"] = w["spend_7d"]
+            row["avg_daily_spend_7d"] = w["avg_daily_spend_7d"]
+            row["warning_threshold"] = None
+            row["available_days"] = None
+            return row
+        # 有限预算账户：查 APPROVED 的 account_budget
+        token = _gg_get_access_token()
+        if not token:
+            row["source_status"] = "error"; row["source_error"] = "gg oauth fail"; return row
+        headers = {"Authorization": f"Bearer {token}", "developer-token": GG_DEVELOPER_TOKEN,
+                   "login-customer-id": GG_MCC_ID, "Content-Type": "application/json"}
+        q = ("SELECT account_budget.approved_spending_limit_micros, "
+             "account_budget.amount_served_micros, account_budget.total_adjustments_micros, "
+             "account_budget.status FROM account_budget "
+             "WHERE account_budget.status = 'APPROVED'")
+        url = f"https://googleads.googleapis.com/{GG_API_VER}/customers/{cid}/googleAds:search"
+        resp = requests.post(url, headers=headers, json={"query": q}, timeout=15)
+        if resp.status_code != 200:
+            row["source_status"] = "error"; row["source_error"] = f"gg http {resp.status_code}"; return row
+        results = resp.json().get("results", [])
+        if not results:
+            row["balance"] = None; row["balance_supported"] = False
+            row["balance_note"] = "无 APPROVED 预算"
+        else:
+            ab = results[0].get("accountBudget", {})
+            limit = int(ab.get("approvedSpendingLimitMicros", 0)) / 1e6
+            served = int(ab.get("amountServedMicros", 0)) / 1e6
+            adj = int(ab.get("totalAdjustmentsMicros", 0)) / 1e6
+            row["balance"] = round(limit + adj - served, 2)
+            row["balance_supported"] = True
+        sp = _gg_spend_7d(cid)
+        row.update(_calc_warning(row.get("balance"), sp, row.get("balance_supported", False)))
+    except Exception:
+        row["source_status"] = "error"; row["source_error"] = "gg exception"
+    return row
+
+
+def _balance_asa(acc):
+    # ASA 账单结算，无通用可充值余额字段
+    row = {**{k: acc.get(k) for k in ("side", "channel", "account_name", "account_id", "balance_type")},
+           "data_time": _proxy_now_iso(), "source_status": "ok", "source_error": None,
+           "balance": None, "balance_supported": False,
+           "balance_note": "账单结算，无通用可充值余额字段",
+           "spend_7d": None, "avg_daily_spend_7d": None,
+           "warning_threshold": None, "available_days": None, "warning": False}
+    return row
+
+
+def _collect_balances():
+    out = []
+    for acc in MEDIA_ACCOUNTS:
+        ch = acc.get("channel")
+        try:
+            if ch == "facebook":
+                out.append(_balance_facebook(acc))
+            elif ch == "tiktok":
+                out.append(_balance_tiktok(acc))
+            elif ch == "google":
+                out.append(_balance_google(acc))
+            elif ch == "asa":
+                out.append(_balance_asa(acc))
+        except Exception:
+            out.append({**{k: acc.get(k) for k in ("side", "channel", "account_name", "account_id")},
+                        "source_status": "error", "source_error": "collect exception",
+                        "data_time": _proxy_now_iso()})
+    return out
+
+
+@app.route("/internal/media/health")
+def internal_media_health():
+    auth = _require_api_key()
+    if auth:
+        return auth
+    # 环境变量完整性（只报是否齐全，不返回值）
+    env_ok = {
+        "facebook": bool(FB_LONG_TOKEN),
+        "tiktok":   bool(TT_ACCESS_TOKEN),
+        "google":   all([GG_CLIENT_ID, GG_CLIENT_SECRET, GG_REFRESH_TOKEN, GG_DEVELOPER_TOKEN]),
+        "asa":      True,  # ASA 暂按账单结算，无需可充值凭证
+        "dashboard_api_key": bool(DASHBOARD_API_KEY),
+    }
+    services = {}
+    # Facebook 连通性
+    try:
+        r = requests.get(f"{FB_BASE}/me", timeout=10, params={"access_token": get_fb_token(), "fields": "id"})
+        services["facebook"] = {"status": "ok" if r.status_code == 200 else "error"}
+    except Exception:
+        services["facebook"] = {"status": "error"}
+    # TikTok 连通性
+    try:
+        r = requests.get(f"{TT_BASE}/advertiser/info/", headers={"Access-Token": TT_ACCESS_TOKEN},
+                         timeout=10, params={"advertiser_ids": _json.dumps([TT_ADV_ID])})
+        services["tiktok"] = {"status": "ok" if r.json().get("code") == 0 else "error"}
+    except Exception:
+        services["tiktok"] = {"status": "error"}
+    # Google OAuth 刷新
+    try:
+        services["google"] = {"status": "ok" if _gg_get_access_token() else "error"}
+    except Exception:
+        services["google"] = {"status": "error"}
+    # ASA
+    services["asa"] = {"status": "ok", "note": "账单结算，无可充值余额接口"}
+
+    return jsonify({
+        "ok": True,
+        "data_time": _proxy_now_iso(),
+        "env_complete": env_ok,
+        "services": services,
+    })
+
+
+@app.route("/internal/media/balances")
+def internal_media_balances():
+    auth = _require_api_key()
+    if auth:
+        return auth
+    now = _time.time()
+    if _proxy_cache["balances"] and now - _proxy_cache["balances_ts"] < _PROXY_CACHE_TTL:
+        cached = _proxy_cache["balances"]
+        return jsonify({"ok": True, "cached": True, "data_time": cached["data_time"], "accounts": cached["accounts"]})
+    accounts = _collect_balances()
+    payload = {"data_time": _proxy_now_iso(), "accounts": accounts}
+    _proxy_cache["balances"] = payload
+    _proxy_cache["balances_ts"] = now
+    return jsonify({"ok": True, "cached": False, "data_time": payload["data_time"], "accounts": accounts})
+
+# ══════════════════════════════════════════════════════════════════
+# 内部数据代理接口 END
+# ══════════════════════════════════════════════════════════════════
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()

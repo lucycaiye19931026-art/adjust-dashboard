@@ -1652,6 +1652,86 @@ def internal_media_balances():
     _proxy_cache["balances_ts"] = now
     return jsonify({"ok": True, "cached": False, "data_time": payload["data_time"], "accounts": accounts})
 
+
+# ── 被拒素材（Rejected Creatives）──────────────────────────
+_proxy_cache["rejected"] = None
+_proxy_cache["rejected_ts"] = 0
+
+
+def _fetch_rejected_ads(act_id, side):
+    """拉取单个 FB 广告账户下被拒/有问题的广告创意。"""
+    out = []
+    try:
+        r = requests.get(f"{FB_BASE}/{act_id}/ads", timeout=25, params={
+            "access_token": get_fb_token(),
+            "fields": "name,configured_status,effective_status,campaign{name},adset{name},ad_review_feedback",
+            "limit": 300,
+        })
+        if r.status_code != 200:
+            return {"error": f"fb http {r.status_code}"}, []
+        for ad in r.json().get("data", []):
+            eff = ad.get("effective_status", "")
+            fb = ad.get("ad_review_feedback")
+            # 被拒判定：effective_status=DISAPPROVED/WITH_ISSUES 或存在 review feedback
+            if eff in ("DISAPPROVED", "WITH_ISSUES", "PENDING_REVIEW") or fb:
+                reasons = []
+                if isinstance(fb, dict):
+                    g = fb.get("global") or {}
+                    if isinstance(g, dict):
+                        reasons = list(g.keys())
+                out.append({
+                    "side": side, "channel": "facebook",
+                    "account_id": act_id.replace("act_", ""),
+                    "ad_name": ad.get("name", ""),
+                    "campaign_name": (ad.get("campaign") or {}).get("name", ""),
+                    "adset_name": (ad.get("adset") or {}).get("name", ""),
+                    "effective_status": eff,
+                    "reject_reasons": reasons,
+                })
+        return None, out
+    except Exception:
+        return {"error": "fb exception"}, []
+
+
+def _collect_rejected():
+    accounts = []
+    total_rejected = 0
+    for act_id in FB_ACT_IDS:
+        err, ads = _fetch_rejected_ads(act_id, "android")
+        accounts.append({"side": "android", "channel": "facebook",
+                         "account_id": act_id.replace("act_", ""),
+                         "rejected_count": len(ads), "rejected_ads": ads,
+                         "source_status": "error" if err else "ok",
+                         "source_error": err.get("error") if err else None})
+        total_rejected += len(ads)
+    for act_id in FB_IOS_ACT_IDS:
+        err, ads = _fetch_rejected_ads(act_id, "ios")
+        accounts.append({"side": "ios", "channel": "facebook",
+                         "account_id": act_id.replace("act_", ""),
+                         "rejected_count": len(ads), "rejected_ads": ads,
+                         "source_status": "error" if err else "ok",
+                         "source_error": err.get("error") if err else None})
+        total_rejected += len(ads)
+    return total_rejected, accounts
+
+
+@app.route("/internal/media/rejected-creatives")
+def internal_media_rejected():
+    auth = _require_api_key()
+    if auth:
+        return auth
+    now = _time.time()
+    if _proxy_cache.get("rejected") and now - _proxy_cache.get("rejected_ts", 0) < _PROXY_CACHE_TTL:
+        c = _proxy_cache["rejected"]
+        return jsonify({"ok": True, "cached": True, "data_time": c["data_time"],
+                        "total_rejected": c["total_rejected"], "accounts": c["accounts"]})
+    total_rejected, accounts = _collect_rejected()
+    payload = {"data_time": _proxy_now_iso(), "total_rejected": total_rejected, "accounts": accounts}
+    _proxy_cache["rejected"] = payload
+    _proxy_cache["rejected_ts"] = now
+    return jsonify({"ok": True, "cached": False, "data_time": payload["data_time"],
+                    "total_rejected": total_rejected, "accounts": accounts})
+
 # ══════════════════════════════════════════════════════════════════
 # 内部数据代理接口 END
 # ══════════════════════════════════════════════════════════════════

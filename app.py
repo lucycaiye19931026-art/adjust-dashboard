@@ -1793,6 +1793,111 @@ def internal_media_rejected_creatives():
     _proxy_cache["rejected"]=payload; _proxy_cache["rejected_ts"]=now
     return jsonify({"ok":True,"cached":False,**payload})
 
+# ── 第一部分真实逐小时花费：今日/昨日、端口/渠道/账户 ──
+_hourly_cache = {"payload": None, "ts": 0}
+
+def _hours24(): return [0.0] * 24
+
+def _fb_hourly(act_ids, date_s):
+    out = {}; errors = []
+    for act in act_ids:
+        aid = act.replace("act_", ""); vals = _hours24(); name = aid
+        try:
+            r = requests.get(f"{FB_BASE}/{act}/insights", timeout=35, params={"access_token": get_fb_token(), "fields":"account_id,account_name,spend", "time_range":_json.dumps({"since":date_s,"until":date_s}), "level":"account", "breakdowns":"hourly_stats_aggregated_by_advertiser_time_zone", "limit":100})
+            if r.status_code != 200: raise RuntimeError(f"http {r.status_code}")
+            for x in r.json().get("data",[]):
+                name=x.get("account_name") or name; key=x.get("hourly_stats_aggregated_by_advertiser_time_zone","")
+                if key[:2].isdigit(): vals[int(key[:2])] += float(x.get("spend",0) or 0)
+            out[aid]={"name":name,"hours":[round(v,2) for v in vals]}
+        except Exception as e: errors.append({"channel":"Facebook","account_id":aid,"error":str(e)[:80]})
+    return out, errors
+
+def _gg_hourly(date_s):
+    out={}; errors=[]; token=_gg_get_access_token()
+    headers={"Authorization":f"Bearer {token}","developer-token":GG_DEVELOPER_TOKEN,"login-customer-id":GG_MCC_ID,"Content-Type":"application/json"}
+    for cid in GG_CUSTOMER_IDS:
+        vals=_hours24(); name=cid
+        q=f"SELECT customer.descriptive_name, segments.hour, metrics.cost_micros FROM customer WHERE segments.date = '{date_s}'"
+        try:
+            r=requests.post(f"https://googleads.googleapis.com/{GG_API_VER}/customers/{cid}/googleAds:search",headers=headers,json={"query":q},timeout=35)
+            if r.status_code!=200: raise RuntimeError(f"http {r.status_code}")
+            for x in r.json().get("results",[]):
+                name=(x.get("customer") or {}).get("descriptiveName") or name; h=int((x.get("segments") or {}).get("hour",0)); vals[h]+=int((x.get("metrics") or {}).get("costMicros",0) or 0)/1e6
+            out[cid]={"name":name,"hours":[round(v,2) for v in vals]}
+        except Exception as e: errors.append({"channel":"Google","account_id":cid,"error":str(e)[:80]})
+    return out,errors
+
+def _tt_hourly(adv_id,date_s):
+    vals=_hours24(); name=adv_id
+    try:
+        ir=requests.get(f"{TT_BASE}/advertiser/info/",headers={"Access-Token":TT_ACCESS_TOKEN},params={"advertiser_ids":_json.dumps([adv_id])},timeout=20).json(); ls=(ir.get("data") or {}).get("list",[]); name=(ls[0].get("name") if ls else None) or name
+        r=requests.get(f"{TT_BASE}/report/integrated/get/",headers={"Access-Token":TT_ACCESS_TOKEN},timeout=35,params={"advertiser_id":adv_id,"report_type":"BASIC","data_level":"AUCTION_ADVERTISER","dimensions":_json.dumps(["stat_time_hour"]),"metrics":_json.dumps(["spend"]),"start_date":date_s,"end_date":date_s,"page_size":1000})
+        d=r.json()
+        if d.get("code")!=0: raise RuntimeError(f"code {d.get('code')}: {d.get('message','')}")
+        for x in (d.get("data") or {}).get("list",[]):
+            dim=x.get("dimensions") or {}; key=str(dim.get("stat_time_hour",'')); h=int(key[11:13] if len(key)>=13 else key[:2]); vals[h]+=float((x.get("metrics") or {}).get("spend",0) or 0)
+        return {adv_id:{"name":name,"hours":[round(v,2) for v in vals]}},[]
+    except Exception as e: return {},[{"channel":"TikTok","account_id":adv_id,"error":str(e)[:100]}]
+
+def _sum_hours(accounts):
+    v=_hours24()
+    for a in accounts.values():
+        for i,x in enumerate(a.get("hours",[])): v[i]+=x
+    return [round(x,2) for x in v]
+
+def _hourly_payload():
+    now=now8(); today=now.strftime("%Y-%m-%d"); yesterday=(now-timedelta(days=1)).strftime("%Y-%m-%d"); result={"android":{"channels":{}},"ios":{"channels":{}},"errors":[]}
+    for ds,label in ((today,"today"),(yesterday,"yesterday")):
+        gg,ge=_gg_hourly(ds); fa,fe=_fb_hourly(FB_ACT_IDS,ds); fi,fie=_fb_hourly(FB_IOS_ACT_IDS,ds); ta,te=_tt_hourly(TT_ADV_ID,ds); ti,tie=_tt_hourly(TT_IOS_ADV_ID,ds); result["errors"]+=ge+fe+fie+te+tie
+        for side,ch,accounts in (("android","Google",gg),("android","Facebook",fa),("android","TikTok",ta),("ios","Facebook",fi),("ios","TikTok",ti)):
+            node=result[side]["channels"].setdefault(ch,{"accounts":{}})
+            for aid,a in accounts.items(): node["accounts"].setdefault(aid,{"name":a["name"]})[label]=a["hours"]
+    for side in ("android","ios"):
+        all_t=_hours24(); all_y=_hours24()
+        for node in result[side]["channels"].values():
+            for label in ("today","yesterday"):
+                acc={k:{"hours":v.get(label,_hours24())} for k,v in node["accounts"].items()}; node[label]=_sum_hours(acc)
+            for i in range(24): all_t[i]+=node["today"][i]; all_y[i]+=node["yesterday"][i]
+        result[side]["today"]=[round(x,2) for x in all_t]; result[side]["yesterday"]=[round(x,2) for x in all_y]
+    result.update({"ok":True,"data_time":_proxy_now_iso(),"current_hour":now.hour})
+    return result
+
+@app.route("/dashboard-api/hourly-spend")
+def dashboard_hourly_spend():
+    now=_time.time()
+    if _hourly_cache["payload"] and now-_hourly_cache["ts"]<300: return jsonify({**_hourly_cache["payload"],"cached":True})
+    p=_hourly_payload(); _hourly_cache.update(payload=p,ts=now); return jsonify({**p,"cached":False})
+
+# ── 无人值守总看板：同源公开只读业务数据，不返回任何 Token / Secret ──
+UNIFIED_DASHBOARD_HTML = open("unified_dashboard.html", encoding="utf-8").read() if os.path.exists("unified_dashboard.html") else "<h1>unified_dashboard.html not found</h1>"
+
+@app.route("/realtime-dashboard")
+def realtime_dashboard_page():
+    return Response(UNIFIED_DASHBOARD_HTML, mimetype="text/html")
+
+@app.route("/dashboard-api/balances")
+def dashboard_public_balances():
+    now = _time.time()
+    if _proxy_cache["balances"] and now - _proxy_cache["balances_ts"] < _PROXY_CACHE_TTL:
+        p = _proxy_cache["balances"]
+        return jsonify({"ok": True, "cached": True, **p})
+    accounts = _collect_balances()
+    payload = {"data_time": _proxy_now_iso(), "accounts": accounts}
+    _proxy_cache["balances"] = payload; _proxy_cache["balances_ts"] = now
+    return jsonify({"ok": True, "cached": False, **payload})
+
+@app.route("/dashboard-api/rejected-creatives")
+def dashboard_public_rejected():
+    now = _time.time()
+    if _proxy_cache["rejected"] and now - _proxy_cache["rejected_ts"] < _REJECTED_TTL:
+        return jsonify({"ok": True, "cached": True, **_proxy_cache["rejected"]})
+    accounts, rows = _collect_rejected()
+    payload = {"data_time": _proxy_now_iso(), "monitored_accounts": accounts, "items": rows,
+               "summary": {"monitored": len(accounts), "rejected": sum(1 for x in rows if x.get("review_status")),
+                           "source_errors": sum(1 for x in rows if x.get("source_status") != "ok")}}
+    _proxy_cache["rejected"] = payload; _proxy_cache["rejected_ts"] = now
+    return jsonify({"ok": True, "cached": False, **payload})
+
 # 内部数据代理接口 END
 # ══════════════════════════════════════════════════════════════════
 

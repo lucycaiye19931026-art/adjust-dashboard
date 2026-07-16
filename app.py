@@ -1859,7 +1859,8 @@ def _hourly_payload():
                 acc={k:{"hours":v.get(label,_hours24())} for k,v in node["accounts"].items()}; node[label]=_sum_hours(acc)
             for i in range(24): all_t[i]+=node["today"][i]; all_y[i]+=node["yesterday"][i]
         result[side]["today"]=[round(x,2) for x in all_t]; result[side]["yesterday"]=[round(x,2) for x in all_y]
-    result.update({"ok":True,"data_time":_proxy_now_iso(),"current_hour":now.hour})
+    # 仅比较最近一个完整小时；当前未结束小时不参与同期累计，避免部分小时 vs 完整小时失真
+    result.update({"ok":True,"data_time":_proxy_now_iso(),"current_hour":max(0,now.hour-1)})
     return result
 
 @app.route("/dashboard-api/hourly-spend")
@@ -1869,11 +1870,24 @@ def dashboard_hourly_spend():
     p=_hourly_payload(); _hourly_cache.update(payload=p,ts=now); return jsonify({**p,"cached":False})
 
 # ── 无人值守总看板：同源公开只读业务数据，不返回任何 Token / Secret ──
-UNIFIED_DASHBOARD_HTML = open("unified_dashboard.html", encoding="utf-8").read() if os.path.exists("unified_dashboard.html") else "<h1>unified_dashboard.html not found</h1>"
+def _read_dashboard_file(name):
+    return open(name, encoding="utf-8").read() if os.path.exists(name) else f"<h1>{name} not found</h1>"
 
 @app.route("/realtime-dashboard")
 def realtime_dashboard_page():
-    return Response(UNIFIED_DASHBOARD_HTML, mimetype="text/html")
+    return Response(_read_dashboard_file("unified_dashboard.html"), mimetype="text/html")
+
+@app.route("/realtime-dashboard/part1")
+def realtime_dashboard_part1():
+    return Response(_read_dashboard_file("part1_spend.html"), mimetype="text/html")
+
+@app.route("/realtime-dashboard/part2")
+def realtime_dashboard_part2():
+    return Response(_read_dashboard_file("part2_balance.html"), mimetype="text/html")
+
+@app.route("/realtime-dashboard/part3")
+def realtime_dashboard_part3():
+    return Response(_read_dashboard_file("part3_rejected.html"), mimetype="text/html")
 
 @app.route("/dashboard-api/balances")
 def dashboard_public_balances():

@@ -1712,10 +1712,12 @@ def _tt_rejected(acc):
         page = 1
         while True:
             r = requests.get(f"{TT_BASE}/ad/get/", headers={"Access-Token": TT_ACCESS_TOKEN}, timeout=30,
-                             params={"advertiser_id": acc["tt_adv"], "page": page, "page_size": 100})
+                             params={"advertiser_id": acc["tt_adv"], "page": page, "page_size": 10})
             d = r.json()
             if d.get("code") != 0:
-                base.update(source_status="error", source_error=f"tt code {d.get('code')}"); return out or [base]
+                # TikTok message 仅为接口参数/权限说明，不含 Access Token，可用于定位错误
+                msg = str(d.get("message") or d.get("msg") or "unknown")[:180]
+                base.update(source_status="error", source_error=f"tt code {d.get('code')}: {msg}"); return out or [base]
             data = d.get("data") or {}; items = data.get("list", [])
             for ad in items:
                 st = str(ad.get("secondary_status") or ad.get("operation_status") or "")
@@ -1749,7 +1751,8 @@ def _gg_rejected(acc):
     WHERE ad_group_ad.policy_summary.approval_status != 'APPROVED'"""
     try:
         url = f"https://googleads.googleapis.com/{GG_API_VER}/customers/{cid}/googleAds:search"
-        r = requests.post(url, headers=headers, json={"query": q, "pageSize": 10000}, timeout=45)
+        # Google Ads v17+ Search 使用固定分页，禁止传 pageSize，否则返回 REQUEST_ERROR
+        r = requests.post(url, headers=headers, json={"query": q}, timeout=45)
         if r.status_code != 200:
             base.update(source_status="error", source_error=f"gg http {r.status_code}"); return [base]
         for x in r.json().get("results", []):

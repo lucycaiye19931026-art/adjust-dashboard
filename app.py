@@ -1652,87 +1652,145 @@ def internal_media_balances():
     _proxy_cache["balances_ts"] = now
     return jsonify({"ok": True, "cached": False, "data_time": payload["data_time"], "accounts": accounts})
 
+# ══════════════════════════════════════════════════════════════════
+# ── 被拒账户 / 拒登素材监控（Google / Facebook / TikTok）────────
+_REJECTED_TTL = 300
+_proxy_cache.update({"rejected": None, "rejected_ts": 0})
 
-# ── 被拒素材（Rejected Creatives）──────────────────────────
-_proxy_cache["rejected"] = None
-_proxy_cache["rejected_ts"] = 0
+def _reject_base(acc):
+    return {"side": acc.get("side"), "channel": acc.get("channel"),
+            "account_name": acc.get("account_name"), "account_id": acc.get("account_id"),
+            "account_status": None, "campaign_name": None, "campaign_id": None,
+            "adgroup_name": None, "adgroup_id": None, "ad_name": None, "ad_id": None,
+            "creative_id": None, "review_status": None, "reject_reason": None,
+            "policy_topics": [], "first_seen_at": None, "updated_at": None,
+            "preview_url": None, "source_status": "ok", "source_error": None,
+            "data_time": _proxy_now_iso()}
 
-
-def _fetch_rejected_ads(act_id, side):
-    """拉取单个 FB 广告账户下被拒/有问题的广告创意。"""
-    out = []
+def _fb_rejected(acc):
+    base = _reject_base(acc); out = []
     try:
-        r = requests.get(f"{FB_BASE}/{act_id}/ads", timeout=25, params={
-            "access_token": get_fb_token(),
-            "fields": "name,configured_status,effective_status,campaign{name},adset{name},ad_review_feedback",
-            "limit": 300,
-        })
-        if r.status_code != 200:
-            return {"error": f"fb http {r.status_code}"}, []
-        for ad in r.json().get("data", []):
-            eff = ad.get("effective_status", "")
-            fb = ad.get("ad_review_feedback")
-            # 被拒判定：effective_status=DISAPPROVED/WITH_ISSUES 或存在 review feedback
-            if eff in ("DISAPPROVED", "WITH_ISSUES", "PENDING_REVIEW") or fb:
-                reasons = []
-                if isinstance(fb, dict):
-                    g = fb.get("global") or {}
-                    if isinstance(g, dict):
-                        reasons = list(g.keys())
-                out.append({
-                    "side": side, "channel": "facebook",
-                    "account_id": act_id.replace("act_", ""),
-                    "ad_name": ad.get("name", ""),
-                    "campaign_name": (ad.get("campaign") or {}).get("name", ""),
-                    "adset_name": (ad.get("adset") or {}).get("name", ""),
-                    "effective_status": eff,
-                    "reject_reasons": reasons,
-                })
-        return None, out
+        info = requests.get(f"{FB_BASE}/{acc['fb_act']}", timeout=20, params={
+            "access_token": get_fb_token(), "fields": "name,account_status,disable_reason"})
+        if info.status_code != 200:
+            base.update(source_status="error", source_error=f"fb account http {info.status_code}")
+            return [base]
+        ai = info.json(); base["account_name"] = ai.get("name"); base["account_status"] = str(ai.get("account_status", ""))
+        params = {"access_token": get_fb_token(), "limit": 500,
+                  "fields": "id,name,status,effective_status,updated_time,campaign{id,name},adset{id,name},creative{id,name,thumbnail_url}"}
+        url = f"{FB_BASE}/{acc['fb_act']}/ads"
+        while url:
+            r = requests.get(url, timeout=30, params=params if url.endswith('/ads') else None)
+            if r.status_code != 200:
+                base.update(source_status="error", source_error=f"fb ads http {r.status_code}")
+                return out or [base]
+            j = r.json()
+            for ad in j.get("data", []):
+                st = str(ad.get("effective_status") or ad.get("status") or "")
+                # 只预警明确拒登/存在问题；PENDING_REVIEW 属正常审核中，不计为拒登
+                if st not in ("DISAPPROVED", "WITH_ISSUES"):
+                    continue
+                row = dict(base); camp = ad.get("campaign") or {}; aset = ad.get("adset") or {}; cr = ad.get("creative") or {}
+                row.update(campaign_name=camp.get("name"), campaign_id=camp.get("id"), adgroup_name=aset.get("name"),
+                           adgroup_id=aset.get("id"), ad_name=ad.get("name"), ad_id=ad.get("id"), creative_id=cr.get("id"),
+                           review_status=st, reject_reason="Meta 审核未通过/存在问题；详细政策原因需账户具备审核反馈权限",
+                           updated_at=ad.get("updated_time"), preview_url=cr.get("thumbnail_url"))
+                out.append(row)
+            url = (j.get("paging") or {}).get("next")
+        return out
     except Exception:
-        return {"error": "fb exception"}, []
+        base.update(source_status="error", source_error="fb rejected query exception"); return [base]
 
+def _tt_rejected(acc):
+    base = _reject_base(acc); out = []
+    try:
+        ir = requests.get(f"{TT_BASE}/advertiser/info/", headers={"Access-Token": TT_ACCESS_TOKEN}, timeout=20,
+                          params={"advertiser_ids": _json.dumps([acc['tt_adv']])})
+        ij = ir.json(); infos = (ij.get("data") or {}).get("list", []) if isinstance(ij.get("data"), dict) else []
+        if infos:
+            base["account_name"] = infos[0].get("name"); base["account_status"] = str(infos[0].get("status", ""))
+        page = 1
+        while True:
+            r = requests.get(f"{TT_BASE}/ad/get/", headers={"Access-Token": TT_ACCESS_TOKEN}, timeout=30,
+                             params={"advertiser_id": acc["tt_adv"], "page": page, "page_size": 100,
+                                     "fields": _json.dumps(["ad_id","ad_name","campaign_id","campaign_name","adgroup_id","adgroup_name","operation_status","secondary_status","reject_message","modify_time","image_ids","video_id"])})
+            d = r.json()
+            if d.get("code") != 0:
+                base.update(source_status="error", source_error=f"tt code {d.get('code')}"); return out or [base]
+            data = d.get("data") or {}; items = data.get("list", [])
+            for ad in items:
+                st = str(ad.get("secondary_status") or ad.get("operation_status") or "")
+                # 只预警明确拒登/停用；普通 AUDIT/REVIEW 审核中不计为拒登
+                if not any(x in st.upper() for x in ("REJECT", "DISAPPROV", "SUSPEND")):
+                    continue
+                row = dict(base); row.update(campaign_name=ad.get("campaign_name"), campaign_id=str(ad.get("campaign_id") or ""),
+                    adgroup_name=ad.get("adgroup_name"), adgroup_id=str(ad.get("adgroup_id") or ""), ad_name=ad.get("ad_name"),
+                    ad_id=str(ad.get("ad_id") or ""), creative_id=str(ad.get("video_id") or ((ad.get("image_ids") or [""])[0])),
+                    review_status=st, reject_reason=ad.get("reject_message") or "TikTok 审核未通过", updated_at=ad.get("modify_time"))
+                out.append(row)
+            pi = data.get("page_info") or {}; total_page = int(pi.get("total_page", page) or page)
+            if page >= total_page or not items: break
+            page += 1
+        return out
+    except Exception:
+        base.update(source_status="error", source_error="tt rejected query exception"); return [base]
+
+def _gg_rejected(acc):
+    base = _reject_base(acc); out = []; cid = acc["gg_customer_id"]
+    token = _gg_get_access_token()
+    if not token:
+        base.update(source_status="error", source_error="gg oauth fail"); return [base]
+    headers = {"Authorization": f"Bearer {token}", "developer-token": GG_DEVELOPER_TOKEN,
+               "login-customer-id": GG_MCC_ID, "Content-Type": "application/json"}
+    q = """SELECT customer.descriptive_name, customer.status, campaign.id, campaign.name,
+    ad_group.id, ad_group.name, ad_group_ad.ad.id, ad_group_ad.ad.name,
+    ad_group_ad.status, ad_group_ad.policy_summary.approval_status,
+    ad_group_ad.policy_summary.policy_topic_entries
+    FROM ad_group_ad
+    WHERE ad_group_ad.policy_summary.approval_status != 'APPROVED'"""
+    try:
+        url = f"https://googleads.googleapis.com/{GG_API_VER}/customers/{cid}/googleAds:search"
+        r = requests.post(url, headers=headers, json={"query": q, "pageSize": 10000}, timeout=45)
+        if r.status_code != 200:
+            base.update(source_status="error", source_error=f"gg http {r.status_code}"); return [base]
+        for x in r.json().get("results", []):
+            cu=x.get("customer",{}); ca=x.get("campaign",{}); ag=x.get("adGroup",{}); aga=x.get("adGroupAd",{}); ad=aga.get("ad",{}); ps=aga.get("policySummary",{})
+            topics=[]
+            for t in ps.get("policyTopicEntries",[]) or []:
+                topics.append({"topic":t.get("topic"),"type":t.get("type"),"evidences":t.get("evidences",[])})
+            row=dict(base); row.update(account_name=cu.get("descriptiveName") or acc.get("account_name"), account_status=cu.get("status"),
+                campaign_name=ca.get("name"), campaign_id=str(ca.get("id") or ""), adgroup_name=ag.get("name"), adgroup_id=str(ag.get("id") or ""),
+                ad_name=ad.get("name"), ad_id=str(ad.get("id") or ""), creative_id=str(ad.get("id") or ""),
+                review_status=ps.get("approvalStatus"), reject_reason="; ".join(filter(None,[t.get("topic") for t in topics])) or "Google Ads 政策审核未通过",
+                policy_topics=topics)
+            out.append(row)
+        return out
+    except Exception:
+        base.update(source_status="error", source_error="gg rejected query exception"); return [base]
 
 def _collect_rejected():
-    accounts = []
-    total_rejected = 0
-    for act_id in FB_ACT_IDS:
-        err, ads = _fetch_rejected_ads(act_id, "android")
-        accounts.append({"side": "android", "channel": "facebook",
-                         "account_id": act_id.replace("act_", ""),
-                         "rejected_count": len(ads), "rejected_ads": ads,
-                         "source_status": "error" if err else "ok",
-                         "source_error": err.get("error") if err else None})
-        total_rejected += len(ads)
-    for act_id in FB_IOS_ACT_IDS:
-        err, ads = _fetch_rejected_ads(act_id, "ios")
-        accounts.append({"side": "ios", "channel": "facebook",
-                         "account_id": act_id.replace("act_", ""),
-                         "rejected_count": len(ads), "rejected_ads": ads,
-                         "source_status": "error" if err else "ok",
-                         "source_error": err.get("error") if err else None})
-        total_rejected += len(ads)
-    return total_rejected, accounts
-
+    rows=[]; monitored=[]
+    for acc in MEDIA_ACCOUNTS:
+        ch=acc.get("channel")
+        if ch not in ("facebook","tiktok","google"): continue
+        monitored.append({k:acc.get(k) for k in ("side","channel","account_name","account_id")})
+        rows.extend(_fb_rejected(acc) if ch=="facebook" else _tt_rejected(acc) if ch=="tiktok" else _gg_rejected(acc))
+    return monitored, rows
 
 @app.route("/internal/media/rejected-creatives")
-def internal_media_rejected():
-    auth = _require_api_key()
-    if auth:
-        return auth
-    now = _time.time()
-    if _proxy_cache.get("rejected") and now - _proxy_cache.get("rejected_ts", 0) < _PROXY_CACHE_TTL:
-        c = _proxy_cache["rejected"]
-        return jsonify({"ok": True, "cached": True, "data_time": c["data_time"],
-                        "total_rejected": c["total_rejected"], "accounts": c["accounts"]})
-    total_rejected, accounts = _collect_rejected()
-    payload = {"data_time": _proxy_now_iso(), "total_rejected": total_rejected, "accounts": accounts}
-    _proxy_cache["rejected"] = payload
-    _proxy_cache["rejected_ts"] = now
-    return jsonify({"ok": True, "cached": False, "data_time": payload["data_time"],
-                    "total_rejected": total_rejected, "accounts": accounts})
+def internal_media_rejected_creatives():
+    auth=_require_api_key()
+    if auth: return auth
+    now=_time.time()
+    if _proxy_cache["rejected"] and now-_proxy_cache["rejected_ts"]<_REJECTED_TTL:
+        p=_proxy_cache["rejected"]; return jsonify({"ok":True,"cached":True,**p})
+    accounts,rows=_collect_rejected()
+    payload={"data_time":_proxy_now_iso(),"monitored_accounts":accounts,"items":rows,
+             "summary":{"monitored":len(accounts),"rejected":sum(1 for x in rows if x.get("review_status")),
+                        "source_errors":sum(1 for x in rows if x.get("source_status")!="ok")}}
+    _proxy_cache["rejected"]=payload; _proxy_cache["rejected_ts"]=now
+    return jsonify({"ok":True,"cached":False,**payload})
 
-# ══════════════════════════════════════════════════════════════════
 # 内部数据代理接口 END
 # ══════════════════════════════════════════════════════════════════
 

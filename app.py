@@ -1712,8 +1712,7 @@ def _tt_rejected(acc):
         page = 1
         while True:
             r = requests.get(f"{TT_BASE}/ad/get/", headers={"Access-Token": TT_ACCESS_TOKEN}, timeout=30,
-                             params={"advertiser_id": acc["tt_adv"], "page": page, "page_size": 100,
-                                     "fields": _json.dumps(["ad_id","ad_name","campaign_id","campaign_name","adgroup_id","adgroup_name","operation_status","secondary_status","reject_message","modify_time","image_ids","video_id"])})
+                             params={"advertiser_id": acc["tt_adv"], "page": page, "page_size": 100})
             d = r.json()
             if d.get("code") != 0:
                 base.update(source_status="error", source_error=f"tt code {d.get('code')}"); return out or [base]
@@ -1743,7 +1742,7 @@ def _gg_rejected(acc):
     headers = {"Authorization": f"Bearer {token}", "developer-token": GG_DEVELOPER_TOKEN,
                "login-customer-id": GG_MCC_ID, "Content-Type": "application/json"}
     q = """SELECT customer.descriptive_name, customer.status, campaign.id, campaign.name,
-    ad_group.id, ad_group.name, ad_group_ad.ad.id, ad_group_ad.ad.name,
+    ad_group.id, ad_group.name, ad_group_ad.ad.id,
     ad_group_ad.status, ad_group_ad.policy_summary.approval_status,
     ad_group_ad.policy_summary.policy_topic_entries
     FROM ad_group_ad

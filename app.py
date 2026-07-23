@@ -34,7 +34,7 @@ CPS_FIXED = {
 FB_LONG_TOKEN = os.environ.get("FB_LONG_TOKEN", "")
 FB_APP_ID     = os.environ.get("FB_APP_ID",     "3740970239454882")
 FB_APP_SECRET = os.environ.get("FB_APP_SECRET", "")
-FB_ACT_IDS    = ["act_2043458276522117", "act_1338744840870824", "act_554870820824463", "act_1763443588125609", "act_4425161567801548", "act_3511882642320376", "act_1654205562363513"]
+FB_ACT_IDS    = ["act_2043458276522117", "act_1338744840870824", "act_554870820824463", "act_1763443588125609", "act_4425161567801548", "act_3511882642320376", "act_1654205562363513", "act_1054117987058016", "act_1842012880095946", "act_1071912668521082", "act_1016349321026924", "act_893146393853948", "act_1082060041158190", "act_2468093726992507", "act_1554822826379992"]
 FB_BASE       = "https://graph.facebook.com/v19.0"
 
 # ── TikTok Ads API 配置 ───────────────────────────────────
@@ -1335,6 +1335,14 @@ MEDIA_ACCOUNTS = [
     {"side": "android", "channel": "facebook", "account_name": None, "account_id": "4425161567801548", "fb_act": "act_4425161567801548", "balance_type": "unknown"},
     {"side": "android", "channel": "facebook", "account_name": None, "account_id": "3511882642320376", "fb_act": "act_3511882642320376", "balance_type": "unknown"},
     {"side": "android", "channel": "facebook", "account_name": None, "account_id": "1654205562363513", "fb_act": "act_1654205562363513", "balance_type": "unknown"},
+    {"side": "android", "channel": "facebook", "account_name": None, "account_id": "1054117987058016", "fb_act": "act_1054117987058016", "balance_type": "unknown"},
+    {"side": "android", "channel": "facebook", "account_name": None, "account_id": "1842012880095946", "fb_act": "act_1842012880095946", "balance_type": "unknown"},
+    {"side": "android", "channel": "facebook", "account_name": None, "account_id": "1071912668521082", "fb_act": "act_1071912668521082", "balance_type": "unknown"},
+    {"side": "android", "channel": "facebook", "account_name": None, "account_id": "1016349321026924", "fb_act": "act_1016349321026924", "balance_type": "unknown"},
+    {"side": "android", "channel": "facebook", "account_name": None, "account_id": "893146393853948",  "fb_act": "act_893146393853948",  "balance_type": "unknown"},
+    {"side": "android", "channel": "facebook", "account_name": None, "account_id": "1082060041158190", "fb_act": "act_1082060041158190", "balance_type": "unknown"},
+    {"side": "android", "channel": "facebook", "account_name": None, "account_id": "2468093726992507", "fb_act": "act_2468093726992507", "balance_type": "unknown"},
+    {"side": "android", "channel": "facebook", "account_name": None, "account_id": "1554822826379992", "fb_act": "act_1554822826379992", "balance_type": "unknown"},
     # ---- Facebook（iOS）----
     {"side": "ios", "channel": "facebook", "account_name": None, "account_id": "826668223504196",  "fb_act": "act_826668223504196",  "balance_type": "unknown"},
     {"side": "ios", "channel": "facebook", "account_name": None, "account_id": "485941130935481",  "fb_act": "act_485941130935481",  "balance_type": "unknown"},
@@ -1652,266 +1660,89 @@ def internal_media_balances():
     _proxy_cache["balances_ts"] = now
     return jsonify({"ok": True, "cached": False, "data_time": payload["data_time"], "accounts": accounts})
 
-# ══════════════════════════════════════════════════════════════════
-# ── 被拒账户 / 拒登素材监控（Google / Facebook / TikTok）────────
-_REJECTED_TTL = 300
-_proxy_cache.update({"rejected": None, "rejected_ts": 0})
 
-def _reject_base(acc):
-    return {"side": acc.get("side"), "channel": acc.get("channel"),
-            "account_name": acc.get("account_name"), "account_id": acc.get("account_id"),
-            "account_status": None, "campaign_name": None, "campaign_id": None,
-            "adgroup_name": None, "adgroup_id": None, "ad_name": None, "ad_id": None,
-            "creative_id": None, "review_status": None, "reject_reason": None,
-            "policy_topics": [], "first_seen_at": None, "updated_at": None,
-            "preview_url": None, "source_status": "ok", "source_error": None,
-            "data_time": _proxy_now_iso()}
+# ── 被拒素材（Rejected Creatives）──────────────────────────
+_proxy_cache["rejected"] = None
+_proxy_cache["rejected_ts"] = 0
 
-def _fb_rejected(acc):
-    base = _reject_base(acc); out = []
+
+def _fetch_rejected_ads(act_id, side):
+    """拉取单个 FB 广告账户下被拒/有问题的广告创意。"""
+    out = []
     try:
-        info = requests.get(f"{FB_BASE}/{acc['fb_act']}", timeout=20, params={
-            "access_token": get_fb_token(), "fields": "name,account_status,disable_reason"})
-        if info.status_code != 200:
-            base.update(source_status="error", source_error=f"fb account http {info.status_code}")
-            return [base]
-        ai = info.json(); base["account_name"] = ai.get("name"); base["account_status"] = str(ai.get("account_status", ""))
-        params = {"access_token": get_fb_token(), "limit": 500,
-                  "fields": "id,name,status,effective_status,updated_time,campaign{id,name},adset{id,name},creative{id,name,thumbnail_url}"}
-        url = f"{FB_BASE}/{acc['fb_act']}/ads"
-        while url:
-            r = requests.get(url, timeout=30, params=params if url.endswith('/ads') else None)
-            if r.status_code != 200:
-                base.update(source_status="error", source_error=f"fb ads http {r.status_code}")
-                return out or [base]
-            j = r.json()
-            for ad in j.get("data", []):
-                st = str(ad.get("effective_status") or ad.get("status") or "")
-                # 只预警明确拒登/存在问题；PENDING_REVIEW 属正常审核中，不计为拒登
-                if st not in ("DISAPPROVED", "WITH_ISSUES"):
-                    continue
-                row = dict(base); camp = ad.get("campaign") or {}; aset = ad.get("adset") or {}; cr = ad.get("creative") or {}
-                row.update(campaign_name=camp.get("name"), campaign_id=camp.get("id"), adgroup_name=aset.get("name"),
-                           adgroup_id=aset.get("id"), ad_name=ad.get("name"), ad_id=ad.get("id"), creative_id=cr.get("id"),
-                           review_status=st, reject_reason="Meta 审核未通过/存在问题；详细政策原因需账户具备审核反馈权限",
-                           updated_at=ad.get("updated_time"), preview_url=cr.get("thumbnail_url"))
-                out.append(row)
-            url = (j.get("paging") or {}).get("next")
-        return out
-    except Exception:
-        base.update(source_status="error", source_error="fb rejected query exception"); return [base]
-
-def _tt_rejected(acc):
-    base = _reject_base(acc); out = []
-    try:
-        ir = requests.get(f"{TT_BASE}/advertiser/info/", headers={"Access-Token": TT_ACCESS_TOKEN}, timeout=20,
-                          params={"advertiser_ids": _json.dumps([acc['tt_adv']])})
-        ij = ir.json(); infos = (ij.get("data") or {}).get("list", []) if isinstance(ij.get("data"), dict) else []
-        if infos:
-            base["account_name"] = infos[0].get("name"); base["account_status"] = str(infos[0].get("status", ""))
-        page = 1
-        while True:
-            r = requests.get(f"{TT_BASE}/ad/get/", headers={"Access-Token": TT_ACCESS_TOKEN}, timeout=30,
-                             params={"advertiser_id": acc["tt_adv"], "page": page, "page_size": 10})
-            d = r.json()
-            if d.get("code") != 0:
-                # TikTok message 仅为接口参数/权限说明，不含 Access Token，可用于定位错误
-                msg = str(d.get("message") or d.get("msg") or "unknown")[:180]
-                base.update(source_status="error", source_error=f"tt code {d.get('code')}: {msg}"); return out or [base]
-            data = d.get("data") or {}; items = data.get("list", [])
-            for ad in items:
-                st = str(ad.get("secondary_status") or ad.get("operation_status") or "")
-                # 只预警明确拒登/停用；普通 AUDIT/REVIEW 审核中不计为拒登
-                if not any(x in st.upper() for x in ("REJECT", "DISAPPROV", "SUSPEND")):
-                    continue
-                row = dict(base); row.update(campaign_name=ad.get("campaign_name"), campaign_id=str(ad.get("campaign_id") or ""),
-                    adgroup_name=ad.get("adgroup_name"), adgroup_id=str(ad.get("adgroup_id") or ""), ad_name=ad.get("ad_name"),
-                    ad_id=str(ad.get("ad_id") or ""), creative_id=str(ad.get("video_id") or ((ad.get("image_ids") or [""])[0])),
-                    review_status=st, reject_reason=ad.get("reject_message") or "TikTok 审核未通过", updated_at=ad.get("modify_time"))
-                out.append(row)
-            pi = data.get("page_info") or {}; total_page = int(pi.get("total_page", page) or page)
-            if page >= total_page or not items: break
-            page += 1
-        return out
-    except Exception:
-        base.update(source_status="error", source_error="tt rejected query exception"); return [base]
-
-def _gg_rejected(acc):
-    base = _reject_base(acc); out = []; cid = acc["gg_customer_id"]
-    token = _gg_get_access_token()
-    if not token:
-        base.update(source_status="error", source_error="gg oauth fail"); return [base]
-    headers = {"Authorization": f"Bearer {token}", "developer-token": GG_DEVELOPER_TOKEN,
-               "login-customer-id": GG_MCC_ID, "Content-Type": "application/json"}
-    q = """SELECT customer.descriptive_name, customer.status, campaign.id, campaign.name,
-    ad_group.id, ad_group.name, ad_group_ad.ad.id,
-    ad_group_ad.status, ad_group_ad.policy_summary.approval_status,
-    ad_group_ad.policy_summary.policy_topic_entries
-    FROM ad_group_ad
-    WHERE ad_group_ad.policy_summary.approval_status != 'APPROVED'"""
-    try:
-        url = f"https://googleads.googleapis.com/{GG_API_VER}/customers/{cid}/googleAds:search"
-        # Google Ads v17+ Search 使用固定分页，禁止传 pageSize，否则返回 REQUEST_ERROR
-        r = requests.post(url, headers=headers, json={"query": q}, timeout=45)
+        r = requests.get(f"{FB_BASE}/{act_id}/ads", timeout=25, params={
+            "access_token": get_fb_token(),
+            "fields": "name,effective_status,campaign{name},adset{name}",
+            "effective_status": '["DISAPPROVED","WITH_ISSUES","PENDING_REVIEW","ADSET_PAUSED","CAMPAIGN_PAUSED","PAUSED","ACTIVE"]',
+            "limit": 200,
+        })
         if r.status_code != 200:
-            base.update(source_status="error", source_error=f"gg http {r.status_code}"); return [base]
-        for x in r.json().get("results", []):
-            cu=x.get("customer",{}); ca=x.get("campaign",{}); ag=x.get("adGroup",{}); aga=x.get("adGroupAd",{}); ad=aga.get("ad",{}); ps=aga.get("policySummary",{})
-            topics=[]
-            for t in ps.get("policyTopicEntries",[]) or []:
-                topics.append({"topic":t.get("topic"),"type":t.get("type"),"evidences":t.get("evidences",[])})
-            row=dict(base); row.update(account_name=cu.get("descriptiveName") or acc.get("account_name"), account_status=cu.get("status"),
-                campaign_name=ca.get("name"), campaign_id=str(ca.get("id") or ""), adgroup_name=ag.get("name"), adgroup_id=str(ag.get("id") or ""),
-                ad_name=ad.get("name"), ad_id=str(ad.get("id") or ""), creative_id=str(ad.get("id") or ""),
-                review_status=ps.get("approvalStatus"), reject_reason="; ".join(filter(None,[t.get("topic") for t in topics])) or "Google Ads 政策审核未通过",
-                policy_topics=topics)
-            out.append(row)
-        return out
-    except Exception:
-        base.update(source_status="error", source_error="gg rejected query exception"); return [base]
+            return {"error": f"fb http {r.status_code}"}, []
+        try:
+            data = r.json().get("data", [])
+        except Exception:
+            return {"error": "fb non-json"}, []
+        for ad in data:
+            eff = ad.get("effective_status", "")
+            if eff in ("DISAPPROVED", "WITH_ISSUES", "PENDING_REVIEW"):
+                camp = ad.get("campaign") or {}
+                adset = ad.get("adset") or {}
+                out.append({
+                    "side": side, "channel": "facebook",
+                    "account_id": act_id.replace("act_", ""),
+                    "ad_name": ad.get("name", ""),
+                    "campaign_name": camp.get("name", "") if isinstance(camp, dict) else "",
+                    "adset_name": adset.get("name", "") if isinstance(adset, dict) else "",
+                    "effective_status": eff,
+                })
+        return None, out
+    except Exception as e:
+        return {"error": "fb exception"}, []
+
 
 def _collect_rejected():
-    rows=[]; monitored=[]
-    for acc in MEDIA_ACCOUNTS:
-        ch=acc.get("channel")
-        if ch not in ("facebook","tiktok","google"): continue
-        monitored.append({k:acc.get(k) for k in ("side","channel","account_name","account_id")})
-        rows.extend(_fb_rejected(acc) if ch=="facebook" else _tt_rejected(acc) if ch=="tiktok" else _gg_rejected(acc))
-    return monitored, rows
+    accounts = []
+    total_rejected = 0
+    for act_id in FB_ACT_IDS:
+        err, ads = _fetch_rejected_ads(act_id, "android")
+        accounts.append({"side": "android", "channel": "facebook",
+                         "account_id": act_id.replace("act_", ""),
+                         "rejected_count": len(ads), "rejected_ads": ads,
+                         "source_status": "error" if err else "ok",
+                         "source_error": err.get("error") if err else None})
+        total_rejected += len(ads)
+    for act_id in FB_IOS_ACT_IDS:
+        err, ads = _fetch_rejected_ads(act_id, "ios")
+        accounts.append({"side": "ios", "channel": "facebook",
+                         "account_id": act_id.replace("act_", ""),
+                         "rejected_count": len(ads), "rejected_ads": ads,
+                         "source_status": "error" if err else "ok",
+                         "source_error": err.get("error") if err else None})
+        total_rejected += len(ads)
+    return total_rejected, accounts
+
 
 @app.route("/internal/media/rejected-creatives")
-def internal_media_rejected_creatives():
-    auth=_require_api_key()
-    if auth: return auth
-    now=_time.time()
-    if _proxy_cache["rejected"] and now-_proxy_cache["rejected_ts"]<_REJECTED_TTL:
-        p=_proxy_cache["rejected"]; return jsonify({"ok":True,"cached":True,**p})
-    accounts,rows=_collect_rejected()
-    payload={"data_time":_proxy_now_iso(),"monitored_accounts":accounts,"items":rows,
-             "summary":{"monitored":len(accounts),"rejected":sum(1 for x in rows if x.get("review_status")),
-                        "source_errors":sum(1 for x in rows if x.get("source_status")!="ok")}}
-    _proxy_cache["rejected"]=payload; _proxy_cache["rejected_ts"]=now
-    return jsonify({"ok":True,"cached":False,**payload})
-
-# ── 第一部分真实逐小时花费：今日/昨日、端口/渠道/账户 ──
-_hourly_cache = {"payload": None, "ts": 0}
-
-def _hours24(): return [0.0] * 24
-
-def _fb_hourly(act_ids, date_s):
-    out = {}; errors = []
-    for act in act_ids:
-        aid = act.replace("act_", ""); vals = _hours24(); name = aid
-        try:
-            r = requests.get(f"{FB_BASE}/{act}/insights", timeout=35, params={"access_token": get_fb_token(), "fields":"account_id,account_name,spend", "time_range":_json.dumps({"since":date_s,"until":date_s}), "level":"account", "breakdowns":"hourly_stats_aggregated_by_advertiser_time_zone", "limit":100})
-            if r.status_code != 200: raise RuntimeError(f"http {r.status_code}")
-            for x in r.json().get("data",[]):
-                name=x.get("account_name") or name; key=x.get("hourly_stats_aggregated_by_advertiser_time_zone","")
-                if key[:2].isdigit(): vals[int(key[:2])] += float(x.get("spend",0) or 0)
-            out[aid]={"name":name,"hours":[round(v,2) for v in vals]}
-        except Exception as e: errors.append({"channel":"Facebook","account_id":aid,"error":str(e)[:80]})
-    return out, errors
-
-def _gg_hourly(date_s):
-    out={}; errors=[]; token=_gg_get_access_token()
-    headers={"Authorization":f"Bearer {token}","developer-token":GG_DEVELOPER_TOKEN,"login-customer-id":GG_MCC_ID,"Content-Type":"application/json"}
-    for cid in GG_CUSTOMER_IDS:
-        vals=_hours24(); name=cid
-        q=f"SELECT customer.descriptive_name, segments.hour, metrics.cost_micros FROM customer WHERE segments.date = '{date_s}'"
-        try:
-            r=requests.post(f"https://googleads.googleapis.com/{GG_API_VER}/customers/{cid}/googleAds:search",headers=headers,json={"query":q},timeout=35)
-            if r.status_code!=200: raise RuntimeError(f"http {r.status_code}")
-            for x in r.json().get("results",[]):
-                name=(x.get("customer") or {}).get("descriptiveName") or name; h=int((x.get("segments") or {}).get("hour",0)); vals[h]+=int((x.get("metrics") or {}).get("costMicros",0) or 0)/1e6
-            out[cid]={"name":name,"hours":[round(v,2) for v in vals]}
-        except Exception as e: errors.append({"channel":"Google","account_id":cid,"error":str(e)[:80]})
-    return out,errors
-
-def _tt_hourly(adv_id,date_s):
-    vals=_hours24(); name=adv_id
+def internal_media_rejected():
+    auth = _require_api_key()
+    if auth:
+        return auth
     try:
-        ir=requests.get(f"{TT_BASE}/advertiser/info/",headers={"Access-Token":TT_ACCESS_TOKEN},params={"advertiser_ids":_json.dumps([adv_id])},timeout=20).json(); ls=(ir.get("data") or {}).get("list",[]); name=(ls[0].get("name") if ls else None) or name
-        r=requests.get(f"{TT_BASE}/report/integrated/get/",headers={"Access-Token":TT_ACCESS_TOKEN},timeout=35,params={"advertiser_id":adv_id,"report_type":"BASIC","data_level":"AUCTION_ADVERTISER","dimensions":_json.dumps(["stat_time_hour"]),"metrics":_json.dumps(["spend"]),"start_date":date_s,"end_date":date_s,"page_size":1000})
-        d=r.json()
-        if d.get("code")!=0: raise RuntimeError(f"code {d.get('code')}: {d.get('message','')}")
-        for x in (d.get("data") or {}).get("list",[]):
-            dim=x.get("dimensions") or {}; key=str(dim.get("stat_time_hour",'')); h=int(key[11:13] if len(key)>=13 else key[:2]); vals[h]+=float((x.get("metrics") or {}).get("spend",0) or 0)
-        return {adv_id:{"name":name,"hours":[round(v,2) for v in vals]}},[]
-    except Exception as e: return {},[{"channel":"TikTok","account_id":adv_id,"error":str(e)[:100]}]
+        now = _time.time()
+        if _proxy_cache.get("rejected") and now - _proxy_cache.get("rejected_ts", 0) < _PROXY_CACHE_TTL:
+            c = _proxy_cache["rejected"]
+            return jsonify({"ok": True, "cached": True, "data_time": c["data_time"],
+                            "total_rejected": c["total_rejected"], "accounts": c["accounts"]})
+        total_rejected, accounts = _collect_rejected()
+        payload = {"data_time": _proxy_now_iso(), "total_rejected": total_rejected, "accounts": accounts}
+        _proxy_cache["rejected"] = payload
+        _proxy_cache["rejected_ts"] = now
+        return jsonify({"ok": True, "cached": False, "data_time": payload["data_time"],
+                        "total_rejected": total_rejected, "accounts": accounts})
+    except Exception as e:
+        return jsonify({"ok": False, "error": "rejected-creatives internal error", "detail": str(e)[:200]}), 200
 
-def _sum_hours(accounts):
-    v=_hours24()
-    for a in accounts.values():
-        for i,x in enumerate(a.get("hours",[])): v[i]+=x
-    return [round(x,2) for x in v]
-
-def _hourly_payload():
-    now=now8(); today=now.strftime("%Y-%m-%d"); yesterday=(now-timedelta(days=1)).strftime("%Y-%m-%d"); result={"android":{"channels":{}},"ios":{"channels":{}},"errors":[]}
-    for ds,label in ((today,"today"),(yesterday,"yesterday")):
-        gg,ge=_gg_hourly(ds); fa,fe=_fb_hourly(FB_ACT_IDS,ds); fi,fie=_fb_hourly(FB_IOS_ACT_IDS,ds); ta,te=_tt_hourly(TT_ADV_ID,ds); ti,tie=_tt_hourly(TT_IOS_ADV_ID,ds); result["errors"]+=ge+fe+fie+te+tie
-        for side,ch,accounts in (("android","Google",gg),("android","Facebook",fa),("android","TikTok",ta),("ios","Facebook",fi),("ios","TikTok",ti)):
-            node=result[side]["channels"].setdefault(ch,{"accounts":{}})
-            for aid,a in accounts.items(): node["accounts"].setdefault(aid,{"name":a["name"]})[label]=a["hours"]
-    for side in ("android","ios"):
-        all_t=_hours24(); all_y=_hours24()
-        for node in result[side]["channels"].values():
-            for label in ("today","yesterday"):
-                acc={k:{"hours":v.get(label,_hours24())} for k,v in node["accounts"].items()}; node[label]=_sum_hours(acc)
-            for i in range(24): all_t[i]+=node["today"][i]; all_y[i]+=node["yesterday"][i]
-        result[side]["today"]=[round(x,2) for x in all_t]; result[side]["yesterday"]=[round(x,2) for x in all_y]
-    # 仅比较最近一个完整小时；当前未结束小时不参与同期累计，避免部分小时 vs 完整小时失真
-    result.update({"ok":True,"data_time":_proxy_now_iso(),"current_hour":max(0,now.hour-1)})
-    return result
-
-@app.route("/dashboard-api/hourly-spend")
-def dashboard_hourly_spend():
-    now=_time.time()
-    if _hourly_cache["payload"] and now-_hourly_cache["ts"]<300: return jsonify({**_hourly_cache["payload"],"cached":True})
-    p=_hourly_payload(); _hourly_cache.update(payload=p,ts=now); return jsonify({**p,"cached":False})
-
-# ── 无人值守总看板：同源公开只读业务数据，不返回任何 Token / Secret ──
-def _read_dashboard_file(name):
-    return open(name, encoding="utf-8").read() if os.path.exists(name) else f"<h1>{name} not found</h1>"
-
-@app.route("/realtime-dashboard")
-def realtime_dashboard_page():
-    return Response(_read_dashboard_file("unified_dashboard.html"), mimetype="text/html")
-
-@app.route("/realtime-dashboard/part1")
-def realtime_dashboard_part1():
-    return Response(_read_dashboard_file("part1_spend.html"), mimetype="text/html")
-
-@app.route("/realtime-dashboard/part2")
-def realtime_dashboard_part2():
-    return Response(_read_dashboard_file("part2_balance.html"), mimetype="text/html")
-
-@app.route("/realtime-dashboard/part3")
-def realtime_dashboard_part3():
-    return Response(_read_dashboard_file("part3_rejected.html"), mimetype="text/html")
-
-@app.route("/dashboard-api/balances")
-def dashboard_public_balances():
-    now = _time.time()
-    if _proxy_cache["balances"] and now - _proxy_cache["balances_ts"] < _PROXY_CACHE_TTL:
-        p = _proxy_cache["balances"]
-        return jsonify({"ok": True, "cached": True, **p})
-    accounts = _collect_balances()
-    payload = {"data_time": _proxy_now_iso(), "accounts": accounts}
-    _proxy_cache["balances"] = payload; _proxy_cache["balances_ts"] = now
-    return jsonify({"ok": True, "cached": False, **payload})
-
-@app.route("/dashboard-api/rejected-creatives")
-def dashboard_public_rejected():
-    now = _time.time()
-    if _proxy_cache["rejected"] and now - _proxy_cache["rejected_ts"] < _REJECTED_TTL:
-        return jsonify({"ok": True, "cached": True, **_proxy_cache["rejected"]})
-    accounts, rows = _collect_rejected()
-    payload = {"data_time": _proxy_now_iso(), "monitored_accounts": accounts, "items": rows,
-               "summary": {"monitored": len(accounts), "rejected": sum(1 for x in rows if x.get("review_status")),
-                           "source_errors": sum(1 for x in rows if x.get("source_status") != "ok")}}
-    _proxy_cache["rejected"] = payload; _proxy_cache["rejected_ts"] = now
-    return jsonify({"ok": True, "cached": False, **payload})
-
+# ══════════════════════════════════════════════════════════════════
 # 内部数据代理接口 END
 # ══════════════════════════════════════════════════════════════════
 

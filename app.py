@@ -13,8 +13,8 @@ from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, request, Response
 
 # ── Adjust 配置 ───────────────────────────────────────────
-APP_TOKEN  = os.environ.get("ADJUST_APP_TOKEN",  "g0ylloj1w54w")
-USER_TOKEN = os.environ.get("ADJUST_USER_TOKEN", "g9gJyYMyUN41vFeaR5QW")
+APP_TOKEN  = os.environ.get("ADJUST_APP_TOKEN", "")
+USER_TOKEN = os.environ.get("ADJUST_USER_TOKEN", "")
 BASE_URL   = "https://automate.adjust.com/reports-service/report"
 HEADERS    = {"Authorization": f"Bearer {USER_TOKEN}"}
 KEY_CH     = ["Google Ads", "Facebook", "TikTok for Business"]
@@ -32,21 +32,21 @@ CPS_FIXED = {
 
 # ── Facebook Ads API 配置 ─────────────────────────────────
 FB_LONG_TOKEN = os.environ.get("FB_LONG_TOKEN", "")
-FB_APP_ID     = os.environ.get("FB_APP_ID",     "3740970239454882")
+FB_APP_ID     = os.environ.get("FB_APP_ID", "")
 FB_APP_SECRET = os.environ.get("FB_APP_SECRET", "")
 FB_ACT_IDS    = ["act_2043458276522117", "act_1338744840870824", "act_554870820824463", "act_1763443588125609", "act_4425161567801548", "act_3511882642320376", "act_1654205562363513", "act_1054117987058016", "act_1842012880095946", "act_1071912668521082", "act_1016349321026924", "act_893146393853948", "act_1082060041158190", "act_2468093726992507", "act_1554822826379992"]
 FB_BASE       = "https://graph.facebook.com/v19.0"
 
 # ── TikTok Ads API 配置 ───────────────────────────────────
 TT_ACCESS_TOKEN = os.environ.get("TT_ACCESS_TOKEN", "")
-TT_ADV_ID       = os.environ.get("TT_ADV_ID",       "7358007483270692880")
+TT_ADV_ID       = os.environ.get("TT_ADV_ID", "")
 TT_BASE         = "https://business-api.tiktok.com/open_api/v1.3"
 
 # ── iOS 专属配置 ──────────────────────────────────────────
-IOS_APP_TOKEN   = os.environ.get("IOS_ADJUST_APP_TOKEN", "du1u32cgaigw")
+IOS_APP_TOKEN   = os.environ.get("IOS_ADJUST_APP_TOKEN", "")
 IOS_KEY_CH      = ["Facebook", "TikTok for Business", "Apple"]
 FB_IOS_ACT_IDS  = ["act_826668223504196", "act_485941130935481", "act_1050911951210157", "act_2487386801730510"]
-TT_IOS_ADV_ID   = os.environ.get("TT_IOS_ADV_ID", "7358007484973563921")
+TT_IOS_ADV_ID   = os.environ.get("TT_IOS_ADV_ID", "")
 
 BASE_PARAMS = {
     "metrics":            "attribution_clicks,installs,cost,register_success_events,apply_for_loan_events,loan_success_events,first_loan_amount_revenue",
@@ -347,7 +347,7 @@ GG_CLIENT_ID       = os.environ.get("GG_CLIENT_ID",      "")
 GG_CLIENT_SECRET   = os.environ.get("GG_CLIENT_SECRET",  "")
 GG_REFRESH_TOKEN   = os.environ.get("GG_REFRESH_TOKEN",  "")
 GG_DEVELOPER_TOKEN = os.environ.get("GG_DEVELOPER_TOKEN","")
-GG_MCC_ID          = os.environ.get("GG_MCC_ID",         "1620959437")
+GG_MCC_ID          = os.environ.get("GG_MCC_ID", "")
 GG_CUSTOMER_IDS    = ["3375325268", "4223410058"]   # 337-532-5268 + 422-341-0058
 GG_API_VER         = "v24"
 
@@ -1924,6 +1924,9 @@ def dashboard_public_rejected():
 # 内部数据代理接口 END
 # ══════════════════════════════════════════════════════════════════
 
+# 独立素材表现看板：不修改现有实时总看板页面与接口
+from creative_dashboard_module import register_creative_dashboard
+register_creative_dashboard(app)
 
 if __name__ == "__main__":
     import argparse

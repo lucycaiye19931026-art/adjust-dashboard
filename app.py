@@ -1928,6 +1928,40 @@ def dashboard_public_rejected():
 from creative_dashboard_module import register_creative_dashboard
 register_creative_dashboard(app)
 
+
+# ── 临时诊断接口：暴露 TikTok / Google API 真实返回，用于排查消耗拉不到 ──
+@app.route("/internal/debug/tiktok")
+def _debug_tiktok():
+    since, until = tt_date_range("today")
+    result = {"since": since, "until": until, "android": {}, "ios": {}}
+    for label, adv in (("android", TT_ADV_ID), ("ios", TT_IOS_ADV_ID)):
+        try:
+            r = requests.get(f"{TT_BASE}/report/integrated/get/",
+                             headers={"Access-Token": TT_ACCESS_TOKEN}, timeout=30,
+                             params={
+                                 "advertiser_id": adv,
+                                 "report_type":   "BASIC",
+                                 "data_level":    "AUCTION_CAMPAIGN",
+                                 "dimensions":    _json.dumps(["campaign_id"]),
+                                 "metrics":       _json.dumps(["campaign_name", "spend"]),
+                                 "start_date":    since,
+                                 "end_date":      until,
+                                 "page_size":     100,
+                             })
+            d = r.json()
+            result[label] = {
+                "http_status": r.status_code,
+                "advertiser_id_used": adv,
+                "code": d.get("code"),
+                "message": d.get("message"),
+                "list_count": len((d.get("data") or {}).get("list", [])),
+                "sample": ((d.get("data") or {}).get("list", []) or [None])[0],
+            }
+        except Exception as e:
+            result[label] = {"exception": str(e)[:200], "advertiser_id_used": adv}
+    return jsonify(result)
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()

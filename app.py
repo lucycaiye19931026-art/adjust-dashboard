@@ -94,49 +94,86 @@ def fb_date_range(period):
     }
     return ranges.get(period, (td, td))
 
-def fetch_fb_channel_spend(period):
-    """拉取 Facebook 全部账户总消耗（用于 Channel 看板）"""
+
+# ── FB 统一并发拉取（性能优化）─────────────────────────────
+# 原：channel/campaign/adgroup 三函数各串行遍历全部账户 = 3×N 次请求
+# 现：一次 level=adset 并发请求，聚合三层数据共用，60 秒缓存
+from concurrent.futures import ThreadPoolExecutor as _TPE
+
+_fb_unified_cache = {"data": {}, "ts": {}}
+_FB_CACHE_TTL = 60
+
+
+def _fb_fetch_one_account(args):
+    """拉单个账户 adset 级消耗（含 campaign_name），返回 (act_id, rows, ok)"""
+    act_id, token, since, until = args
+    try:
+        r = requests.get(f"{FB_BASE}/{act_id}/insights", timeout=25, params={
+            "access_token": token,
+            "fields":       "campaign_name,adset_name,spend",
+            "time_range":   _json.dumps({"since": since, "until": until}),
+            "level":        "adset",
+            "limit":        500,
+        })
+        if r.status_code == 200:
+            return (act_id, r.json().get("data", []), True)
+        return (act_id, [], False)
+    except Exception:
+        return (act_id, [], False)
+
+
+def fb_unified_spend(period, act_ids=None, cache_tag="and"):
+    """
+    并发拉取全部 FB 账户消耗，一次请求聚合三层数据。
+    返回 {"total": float, "campaign": {name: spend}, "adgroup": {camp: {adset: spend}}}
+    """
+    import time as _t
+    ids = act_ids if act_ids is not None else FB_ACT_IDS
     since, until = fb_date_range(period)
+    ck = f"{cache_tag}:{period}:{since}:{until}"
+    now = _t.time()
+    if ck in _fb_unified_cache["data"] and now - _fb_unified_cache["ts"].get(ck, 0) < _FB_CACHE_TTL:
+        return _fb_unified_cache["data"][ck]
+
     token = get_fb_token()
-    total_spend = 0.0
-    for act_id in FB_ACT_IDS:
-        try:
-            r = requests.get(f"{FB_BASE}/{act_id}/insights", timeout=30, params={
-                "access_token": token,
-                "fields":       "spend",
-                "time_range":   _json.dumps({"since": since, "until": until}),
-                "level":        "account",
-            })
-            if r.status_code == 200:
-                data = r.json().get("data", [])
-                total_spend += float(data[0].get("spend", 0)) if data else 0
-        except Exception:
-            pass
-    return round(total_spend, 2)
+    total = 0.0
+    campaign = {}
+    adgroup = {}
+
+    tasks = [(a, token, since, until) for a in ids]
+    # 并发：账户数不多，一次全开（上限 16 并发，避免触发 FB 限频）
+    with _TPE(max_workers=min(16, max(1, len(tasks)))) as ex:
+        for act_id, rows, ok in ex.map(_fb_fetch_one_account, tasks):
+            for row in rows:
+                try:
+                    spend = float(row.get("spend", 0) or 0)
+                except Exception:
+                    spend = 0.0
+                if spend <= 0:
+                    continue
+                cname = row.get("campaign_name", "") or ""
+                aname = row.get("adset_name", "") or ""
+                total += spend
+                if cname:
+                    campaign[cname] = round(campaign.get(cname, 0) + spend, 2)
+                    if aname:
+                        if cname not in adgroup:
+                            adgroup[cname] = {}
+                        adgroup[cname][aname] = round(adgroup[cname].get(aname, 0) + spend, 2)
+
+    result = {"total": round(total, 2), "campaign": campaign, "adgroup": adgroup}
+    _fb_unified_cache["data"][ck] = result
+    _fb_unified_cache["ts"][ck] = now
+    return result
+
+
+def fetch_fb_channel_spend(period):
+    """Facebook 全部账户总消耗（复用统一并发结果）"""
+    return fb_unified_spend(period)["total"]
 
 def fetch_fb_campaign_spend(period):
-    """拉取所有账户 Campaign 级别消耗，返回 {campaign_name: spend} 字典"""
-    since, until = fb_date_range(period)
-    token = get_fb_token()
-    camp_spend = {}
-    for act_id in FB_ACT_IDS:
-        try:
-            r = requests.get(f"{FB_BASE}/{act_id}/insights", timeout=30, params={
-                "access_token": token,
-                "fields":       "campaign_name,spend",
-                "time_range":   _json.dumps({"since": since, "until": until}),
-                "level":        "campaign",
-                "limit":        100,
-            })
-            if r.status_code == 200:
-                for row in r.json().get("data", []):
-                    name  = row.get("campaign_name", "")
-                    spend = float(row.get("spend", 0))
-                    # 同名 campaign 累加（多账户可能同名）
-                    camp_spend[name] = round(camp_spend.get(name, 0) + spend, 2)
-        except Exception:
-            pass
-    return camp_spend
+    """Campaign 级消耗 {campaign_name: spend}（复用统一并发结果）"""
+    return fb_unified_spend(period)["campaign"]
 
 # ── TikTok API 数据拉取 ───────────────────────────────────
 
@@ -190,47 +227,12 @@ def fetch_tt_campaign_spend(period):
 # ── iOS 专属 API 拉取函数 ─────────────────────────────────
 
 def fetch_fb_ios_channel_spend(period):
-    """拉取 Facebook iOS 账户总消耗"""
-    since, until = fb_date_range(period)
-    token = get_fb_token()
-    total_spend = 0.0
-    for act_id in FB_IOS_ACT_IDS:
-        try:
-            r = requests.get(f"{FB_BASE}/{act_id}/insights", timeout=30, params={
-                "access_token": token,
-                "fields":       "spend",
-                "time_range":   _json.dumps({"since": since, "until": until}),
-                "level":        "account",
-            })
-            if r.status_code == 200:
-                data = r.json().get("data", [])
-                total_spend += float(data[0].get("spend", 0)) if data else 0
-        except Exception:
-            pass
-    return round(total_spend, 2)
+    """Facebook iOS 账户总消耗（复用统一并发结果）"""
+    return fb_unified_spend(period, act_ids=FB_IOS_ACT_IDS, cache_tag="ios")["total"]
 
 def fetch_fb_ios_campaign_spend(period):
-    """拉取 Facebook iOS Campaign 级消耗，返回 {campaign_name: spend}"""
-    since, until = fb_date_range(period)
-    token = get_fb_token()
-    camp_spend = {}
-    for act_id in FB_IOS_ACT_IDS:
-        try:
-            r = requests.get(f"{FB_BASE}/{act_id}/insights", timeout=30, params={
-                "access_token": token,
-                "fields":       "campaign_name,spend",
-                "time_range":   _json.dumps({"since": since, "until": until}),
-                "level":        "campaign",
-                "limit":        100,
-            })
-            if r.status_code == 200:
-                for row in r.json().get("data", []):
-                    name  = row.get("campaign_name", "")
-                    spend = float(row.get("spend", 0))
-                    camp_spend[name] = round(camp_spend.get(name, 0) + spend, 2)
-        except Exception:
-            pass
-    return camp_spend
+    """Facebook iOS Campaign 级消耗（复用统一并发结果）"""
+    return fb_unified_spend(period, act_ids=FB_IOS_ACT_IDS, cache_tag="ios")["campaign"]
 
 def fetch_tt_ios_channel_spend(period):
     """拉取 TikTok iOS 账户总消耗"""
@@ -268,39 +270,8 @@ def fetch_tt_ios_campaign_spend(period):
 
 
 def fetch_fb_ios_adgroup_spend(period):
-    """拉取 Facebook iOS 账户 Adset 级消耗，返回 {campaign_name: {adset_name: spend}}（只保留 spend>0）"""
-    import time
-    now = time.time()
-    ck = _adgroup_cache_key("fb_ios", period)
-    if _gg_spend_cache["data"].get(ck) and now - _gg_spend_cache["ts"] < 60:
-        return _gg_spend_cache["data"][ck]
-    since, until = fb_date_range(period)
-    token = get_fb_token()
-    result = {}
-    for act_id in FB_IOS_ACT_IDS:
-        try:
-            r = requests.get(f"{FB_BASE}/{act_id}/insights", timeout=30, params={
-                "access_token": token,
-                "fields":       "adset_name,campaign_name,spend",
-                "time_range":   _json.dumps({"since": since, "until": until}),
-                "level":        "adset",
-                "limit":        200,
-            })
-            if r.status_code == 200:
-                for row in r.json().get("data", []):
-                    cname = row.get("campaign_name", "")
-                    aname = row.get("adset_name", "")
-                    spend = float(row.get("spend", 0))
-                    if spend <= 0:          # ★ 只保留有消耗的 adgroup
-                        continue
-                    if cname not in result:
-                        result[cname] = {}
-                    result[cname][aname] = round(result[cname].get(aname, 0) + spend, 2)
-        except Exception:
-            pass
-    _gg_spend_cache["data"][ck] = result
-    _gg_spend_cache["ts"] = now
-    return result
+    """Facebook iOS Adset 级消耗（复用统一并发结果）"""
+    return fb_unified_spend(period, act_ids=FB_IOS_ACT_IDS, cache_tag="ios")["adgroup"]
 
 
 def fetch_tt_ios_adgroup_spend(period):
@@ -464,39 +435,8 @@ def _adgroup_cache_key(platform, period):
     return f"adgroup_{platform}_{period}"
 
 def fetch_fb_adgroup_spend(period):
-    """拉取所有FB账户 Adset 级别消耗，返回 {campaign_name: {adset_name: spend}}"""
-    import time
-    now = time.time()
-    ck = _adgroup_cache_key("fb", period)
-    if _gg_spend_cache["data"].get(ck) and now - _gg_spend_cache["ts"] < 60:
-        return _gg_spend_cache["data"][ck]
-    since, until = fb_date_range(period)
-    token = get_fb_token()
-    result = {}
-    for act_id in FB_ACT_IDS:
-        try:
-            r = requests.get(f"{FB_BASE}/{act_id}/insights", timeout=30, params={
-                "access_token": token,
-                "fields":       "adset_name,campaign_name,spend",
-                "time_range":   _json.dumps({"since": since, "until": until}),
-                "level":        "adset",
-                "limit":        200,
-            })
-            if r.status_code == 200:
-                for row in r.json().get("data", []):
-                    cname = row.get("campaign_name", "")
-                    aname = row.get("adset_name", "")
-                    spend = float(row.get("spend", 0))
-                    if spend <= 0:          # ★ 只保留有消耗的 adgroup
-                        continue
-                    if cname not in result:
-                        result[cname] = {}
-                    result[cname][aname] = round(result[cname].get(aname, 0) + spend, 2)
-        except Exception:
-            pass
-    _gg_spend_cache["data"][ck] = result
-    _gg_spend_cache["ts"] = now
-    return result
+    """FB Adset 级消耗 {campaign_name: {adset_name: spend}}（复用统一并发结果）"""
+    return fb_unified_spend(period)["adgroup"]
 
 def fetch_tt_adgroup_spend(period):
     """拉取 TikTok Adgroup 级别消耗，返回 {campaign_name: {adgroup_name: spend}}"""
@@ -576,7 +516,7 @@ def fetch_adjust_adgroup(period, channels=None, app_token=None):
     start, end = date_range(period)
     result = {}
     try:
-        resp = requests.get(BASE_URL, headers=HEADERS, timeout=55, params={
+        resp = requests.get(BASE_URL, headers=HEADERS, timeout=25, params={
             "app_token__in": app_token or APP_TOKEN,
             "date_period":   f"{start}:{end}",
             "dimensions":    "channel,campaign_network,adgroup_network",
@@ -745,12 +685,30 @@ def parse_rows(rows_raw, mode="channel"):
     return result
 
 
-def compute_full_channel_total(period):
+
+# ── 全渠道汇总缓存（避免 Channel/Campaign 接口重复请求 Adjust）──
+_full_total_cache = {"data": {}, "ts": {}}
+_FULL_TOTAL_TTL = 60
+
+
+def _full_total_cached(fn, tag, period):
+    import time as _t
+    ck = f"{tag}:{period}"
+    now = _t.time()
+    if ck in _full_total_cache["data"] and now - _full_total_cache["ts"].get(ck, 0) < _FULL_TOTAL_TTL:
+        return _full_total_cache["data"][ck]
+    val = fn(period)
+    _full_total_cache["data"][ck] = val
+    _full_total_cache["ts"][ck] = now
+    return val
+
+
+def _compute_full_channel_total_raw(period):
     """拉取全渠道 channel 维度数据并汇总 Total（与 Adjust 后台总数口径一致，含长尾/自然量渠道）。
     复用 /api/channel 的合并 + 真实消耗注入逻辑，但只返回汇总后的 total 字典。"""
     start, end = date_range(period)
     dims = "channel,day" if has_day(period) else "channel"
-    resp = requests.get(BASE_URL, headers=HEADERS, timeout=55, params={
+    resp = requests.get(BASE_URL, headers=HEADERS, timeout=25, params={
         "app_token__in": APP_TOKEN,
         "date_period":   f"{start}:{end}",
         "dimensions":    dims,
@@ -810,7 +768,7 @@ def api_channel():
     start, end = date_range(period)
     dims = "channel,day" if has_day(period) else "channel"
     try:
-        resp = requests.get(BASE_URL, headers=HEADERS, timeout=55, params={
+        resp = requests.get(BASE_URL, headers=HEADERS, timeout=25, params={
             "app_token__in": APP_TOKEN,
             "date_period":   f"{start}:{end}",
             "dimensions":    dims,
@@ -899,7 +857,7 @@ def api_campaign():
     # Campaign 看板始终按 campaign 汇总（近3天/近7天/本月均为区间汇总，不分日拆行）
     dims = "channel,campaign"
     try:
-        resp = requests.get(BASE_URL, headers=HEADERS, timeout=55, params={
+        resp = requests.get(BASE_URL, headers=HEADERS, timeout=25, params={
             "app_token__in": APP_TOKEN,
             "date_period":   f"{start}:{end}",
             "dimensions":    dims,
@@ -1046,7 +1004,7 @@ def api_ios_channel():
     dims = "channel,day" if has_day(period) else "channel"
     try:
         resp = requests.get(BASE_URL, headers={"Authorization": f"Bearer {USER_TOKEN}"},
-                            timeout=55, params={
+                            timeout=25, params={
                                 "app_token__in": IOS_APP_TOKEN,
                                 "date_period":   f"{start}:{end}",
                                 "dimensions":    dims,
@@ -1110,12 +1068,12 @@ def api_ios_channel():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
-def compute_full_ios_channel_total(period):
+def _compute_full_ios_channel_total_raw(period):
     """iOS 版全渠道 Total 汇总（与 Adjust 后台 iOS 总数口径一致，含 Organic/MOLOCO 等长尾渠道）。"""
     start, end = date_range(period)
     dims = "channel,day" if has_day(period) else "channel"
     resp = requests.get(BASE_URL, headers={"Authorization": f"Bearer {USER_TOKEN}"},
-                        timeout=55, params={
+                        timeout=25, params={
                             "app_token__in": IOS_APP_TOKEN,
                             "date_period":   f"{start}:{end}",
                             "dimensions":    dims,
@@ -1166,7 +1124,7 @@ def api_ios_campaign():
     dims = "channel,campaign"
     try:
         resp = requests.get(BASE_URL, headers={"Authorization": f"Bearer {USER_TOKEN}"},
-                            timeout=55, params={
+                            timeout=25, params={
                                 "app_token__in": IOS_APP_TOKEN,
                                 "date_period":   f"{start}:{end}",
                                 "dimensions":    dims,
@@ -1806,6 +1764,18 @@ def internal_media_fb_accounts():
     out["visible_count"] = len(out["visible"])
     out["missing_count"]  = len(out["missing_with_spend"])
     return jsonify(out)
+
+
+
+
+def compute_full_channel_total(period):
+    """全渠道汇总（60 秒缓存包装）"""
+    return _full_total_cached(_compute_full_channel_total_raw, "and", period)
+
+
+def compute_full_ios_channel_total(period):
+    """iOS 全渠道汇总（60 秒缓存包装）"""
+    return _full_total_cached(_compute_full_ios_channel_total_raw, "ios", period)
 
 
 if __name__ == "__main__":

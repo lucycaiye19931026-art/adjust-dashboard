@@ -65,6 +65,40 @@ BASE_PARAMS = {
 
 app = Flask(__name__)
 
+# ── Adjust 报表请求缓存（60 秒）──────────────────────────
+# Channel/Campaign 接口会多次请求 Adjust（主查询 + 全渠道汇总），
+# 相同 params 在 60 秒内直接复用，避免重复等待。
+_adjust_cache = {"data": {}, "ts": {}}
+_ADJUST_TTL = 60
+
+
+def _adjust_cached_get(url, headers=None, params=None, timeout=25):
+    """带 60 秒缓存的 Adjust GET；缓存键 = 关键查询参数"""
+    import time as _t
+    try:
+        ck = _json.dumps({
+            "u": url,
+            "p": params.get("date_period") if params else None,
+            "d": params.get("dimensions") if params else None,
+            "a": params.get("app_token__in") if params else None,
+            "m": (params or {}).get("metrics"),
+        }, sort_keys=True, ensure_ascii=False)
+    except Exception:
+        ck = None
+
+    now = _t.time()
+    if ck and ck in _adjust_cache["data"] and now - _adjust_cache["ts"].get(ck, 0) < _ADJUST_TTL:
+        return _adjust_cache["data"][ck]
+
+    resp = requests.get(url, headers=headers, params=params, timeout=timeout)
+    if ck and resp is not None and resp.status_code == 200:
+        _adjust_cache["data"][ck] = resp
+        _adjust_cache["ts"][ck] = now
+    return resp
+
+
+
+
 # ── 工具函数 ─────────────────────────────────────────────
 
 def now8():
@@ -516,7 +550,7 @@ def fetch_adjust_adgroup(period, channels=None, app_token=None):
     start, end = date_range(period)
     result = {}
     try:
-        resp = requests.get(BASE_URL, headers=HEADERS, timeout=25, params={
+        resp = _adjust_cached_get(BASE_URL, headers=HEADERS, timeout=25, params={
             "app_token__in": app_token or APP_TOKEN,
             "date_period":   f"{start}:{end}",
             "dimensions":    "channel,campaign_network,adgroup_network",
@@ -708,7 +742,7 @@ def _compute_full_channel_total_raw(period):
     复用 /api/channel 的合并 + 真实消耗注入逻辑，但只返回汇总后的 total 字典。"""
     start, end = date_range(period)
     dims = "channel,day" if has_day(period) else "channel"
-    resp = requests.get(BASE_URL, headers=HEADERS, timeout=25, params={
+    resp = _adjust_cached_get(BASE_URL, headers=HEADERS, timeout=25, params={
         "app_token__in": APP_TOKEN,
         "date_period":   f"{start}:{end}",
         "dimensions":    dims,
@@ -768,7 +802,7 @@ def api_channel():
     start, end = date_range(period)
     dims = "channel,day" if has_day(period) else "channel"
     try:
-        resp = requests.get(BASE_URL, headers=HEADERS, timeout=25, params={
+        resp = _adjust_cached_get(BASE_URL, headers=HEADERS, timeout=25, params={
             "app_token__in": APP_TOKEN,
             "date_period":   f"{start}:{end}",
             "dimensions":    dims,
@@ -857,7 +891,7 @@ def api_campaign():
     # Campaign 看板始终按 campaign 汇总（近3天/近7天/本月均为区间汇总，不分日拆行）
     dims = "channel,campaign"
     try:
-        resp = requests.get(BASE_URL, headers=HEADERS, timeout=25, params={
+        resp = _adjust_cached_get(BASE_URL, headers=HEADERS, timeout=25, params={
             "app_token__in": APP_TOKEN,
             "date_period":   f"{start}:{end}",
             "dimensions":    dims,
@@ -1003,7 +1037,7 @@ def api_ios_channel():
     start, end = date_range(period)
     dims = "channel,day" if has_day(period) else "channel"
     try:
-        resp = requests.get(BASE_URL, headers={"Authorization": f"Bearer {USER_TOKEN}"},
+        resp = _adjust_cached_get(BASE_URL, headers={"Authorization": f"Bearer {USER_TOKEN}"},
                             timeout=25, params={
                                 "app_token__in": IOS_APP_TOKEN,
                                 "date_period":   f"{start}:{end}",
@@ -1072,7 +1106,7 @@ def _compute_full_ios_channel_total_raw(period):
     """iOS 版全渠道 Total 汇总（与 Adjust 后台 iOS 总数口径一致，含 Organic/MOLOCO 等长尾渠道）。"""
     start, end = date_range(period)
     dims = "channel,day" if has_day(period) else "channel"
-    resp = requests.get(BASE_URL, headers={"Authorization": f"Bearer {USER_TOKEN}"},
+    resp = _adjust_cached_get(BASE_URL, headers={"Authorization": f"Bearer {USER_TOKEN}"},
                         timeout=25, params={
                             "app_token__in": IOS_APP_TOKEN,
                             "date_period":   f"{start}:{end}",
@@ -1123,7 +1157,7 @@ def api_ios_campaign():
     # Campaign 看板始终按 campaign 汇总（近3天/近7天/本月均为区间汇总，不分日拆行）
     dims = "channel,campaign"
     try:
-        resp = requests.get(BASE_URL, headers={"Authorization": f"Bearer {USER_TOKEN}"},
+        resp = _adjust_cached_get(BASE_URL, headers={"Authorization": f"Bearer {USER_TOKEN}"},
                             timeout=25, params={
                                 "app_token__in": IOS_APP_TOKEN,
                                 "date_period":   f"{start}:{end}",

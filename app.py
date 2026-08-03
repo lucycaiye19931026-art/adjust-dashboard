@@ -1748,44 +1748,17 @@ def internal_media_rejected():
 # ══════════════════════════════════════════════════════════════════
 
 
-# ── 临时诊断接口：暴露 TikTok / Google API 真实返回，排查消耗拉不到 ──
-@app.route("/internal/debug/tiktok")
-def _debug_tiktok():
-    since, until = tt_date_range("today")
-    result = {"since": since, "until": until, "android": {}, "ios": {}}
-    for label, adv in (("android", TT_ADV_ID), ("ios", TT_IOS_ADV_ID)):
-        try:
-            r = requests.get(f"{TT_BASE}/report/integrated/get/",
-                             headers={"Access-Token": TT_ACCESS_TOKEN}, timeout=30,
-                             params={
-                                 "advertiser_id": adv,
-                                 "report_type":   "BASIC",
-                                 "data_level":    "AUCTION_CAMPAIGN",
-                                 "dimensions":    _json.dumps(["campaign_id"]),
-                                 "metrics":       _json.dumps(["campaign_name", "spend"]),
-                                 "start_date":    since,
-                                 "end_date":      until,
-                                 "page_size":     100,
-                             })
-            d = r.json()
-            _lst = (d.get("data") or {}).get("list", [])
-            result[label] = {
-                "http_status": r.status_code,
-                "advertiser_id_used": adv,
-                "token_len": len(TT_ACCESS_TOKEN or ""),
-                "code": d.get("code"),
-                "message": d.get("message"),
-                "list_count": len(_lst),
-                "sample": (_lst or [None])[0],
-            }
-        except Exception as e:
-            result[label] = {"exception": str(e)[:200], "advertiser_id_used": adv}
-    return jsonify(result)
-
-
-# ── 临时诊断接口：列出 Token 可见的全部 FB 账户 + 今日消耗，找出漏配账户 ──
-@app.route("/internal/debug/fb-accounts")
-def _debug_fb_accounts():
+# ══════════════════════════════════════════════════════════════════
+# FB 广告账户巡检接口（防新开户/重启户消耗静默漏抓）
+# GET /internal/media/fb-accounts   需 X-API-Key 鉴权
+#   返回 Token 可见全部账户 + 今日消耗，side 标注 android/ios/UNCONFIGURED
+#   missing_with_spend = 有消耗但未纳入任何看板的账户（需人工判断归属后加入配置）
+# ══════════════════════════════════════════════════════════════════
+@app.route("/internal/media/fb-accounts")
+def internal_media_fb_accounts():
+    auth = _require_api_key()
+    if auth:
+        return auth
     token  = get_fb_token()
     since, until = fb_date_range("today")
     configured = set(FB_ACT_IDS) | set(FB_IOS_ACT_IDS)
@@ -1793,7 +1766,6 @@ def _debug_fb_accounts():
            "configured_android": len(FB_ACT_IDS),
            "configured_ios": len(FB_IOS_ACT_IDS),
            "configured_count": len(configured),
-           "token_len": len(token or ""),
            "visible": [], "missing_with_spend": [], "error": None}
     try:
         url = f"{FB_BASE}/me/adaccounts"

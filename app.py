@@ -34,7 +34,7 @@ CPS_FIXED = {
 FB_LONG_TOKEN = os.environ.get("FB_LONG_TOKEN", "")
 FB_APP_ID     = os.environ.get("FB_APP_ID",     "3740970239454882")
 FB_APP_SECRET = os.environ.get("FB_APP_SECRET", "")
-FB_ACT_IDS    = ["act_2043458276522117", "act_1338744840870824", "act_554870820824463", "act_1763443588125609", "act_4425161567801548", "act_3511882642320376", "act_1654205562363513", "act_1054117987058016", "act_1842012880095946", "act_1071912668521082", "act_1016349321026924", "act_893146393853948", "act_1082060041158190", "act_2468093726992507", "act_1554822826379992"]
+FB_ACT_IDS    = ["act_2043458276522117", "act_1338744840870824", "act_554870820824463", "act_1763443588125609", "act_4425161567801548", "act_3511882642320376", "act_1654205562363513", "act_1054117987058016", "act_1842012880095946", "act_1071912668521082", "act_1016349321026924", "act_893146393853948", "act_1082060041158190", "act_2468093726992507", "act_1554822826379992", "act_1172024374104199"]
 FB_BASE       = "https://graph.facebook.com/v19.0"
 
 # ── TikTok Ads API 配置 ───────────────────────────────────
@@ -1343,6 +1343,7 @@ MEDIA_ACCOUNTS = [
     {"side": "android", "channel": "facebook", "account_name": None, "account_id": "1082060041158190", "fb_act": "act_1082060041158190", "balance_type": "unknown"},
     {"side": "android", "channel": "facebook", "account_name": None, "account_id": "2468093726992507", "fb_act": "act_2468093726992507", "balance_type": "unknown"},
     {"side": "android", "channel": "facebook", "account_name": None, "account_id": "1554822826379992", "fb_act": "act_1554822826379992", "balance_type": "unknown"},
+    {"side": "android", "channel": "facebook", "account_name": None, "account_id": "1172024374104199", "fb_act": "act_1172024374104199", "balance_type": "unknown"},
     # ---- Facebook（iOS）----
     {"side": "ios", "channel": "facebook", "account_name": None, "account_id": "826668223504196",  "fb_act": "act_826668223504196",  "balance_type": "unknown"},
     {"side": "ios", "channel": "facebook", "account_name": None, "account_id": "485941130935481",  "fb_act": "act_485941130935481",  "balance_type": "unknown"},
@@ -1780,6 +1781,59 @@ def _debug_tiktok():
         except Exception as e:
             result[label] = {"exception": str(e)[:200], "advertiser_id_used": adv}
     return jsonify(result)
+
+
+# ── 临时诊断接口：列出 Token 可见的全部 FB 账户 + 今日消耗，找出漏配账户 ──
+@app.route("/internal/debug/fb-accounts")
+def _debug_fb_accounts():
+    token  = get_fb_token()
+    since, until = fb_date_range("today")
+    configured = set(FB_ACT_IDS) | set(FB_IOS_ACT_IDS)
+    out = {"since": since, "until": until,
+           "configured_android": len(FB_ACT_IDS),
+           "configured_ios": len(FB_IOS_ACT_IDS),
+           "configured_count": len(configured),
+           "token_len": len(token or ""),
+           "visible": [], "missing_with_spend": [], "error": None}
+    try:
+        url = f"{FB_BASE}/me/adaccounts"
+        params = {"access_token": token, "limit": 200,
+                  "fields": "account_id,name,account_status,currency"}
+        while url:
+            r = requests.get(url, timeout=40, params=params)
+            j = r.json()
+            if "error" in j:
+                out["error"] = str(j["error"])[:300]
+                break
+            for a in j.get("data", []):
+                act = "act_" + str(a.get("account_id"))
+                spend = None
+                try:
+                    ri = requests.get(f"{FB_BASE}/{act}/insights", timeout=30, params={
+                        "access_token": token, "fields": "spend", "level": "account",
+                        "time_range": _json.dumps({"since": since, "until": until})})
+                    dd = ri.json().get("data", [])
+                    spend = float(dd[0].get("spend", 0)) if dd else 0.0
+                except Exception:
+                    spend = None
+                item = {"act_id": act, "name": a.get("name"),
+                        "status": a.get("account_status"),
+                        "currency": a.get("currency"),
+                        "today_spend": spend,
+                        "side": ("android" if act in set(FB_ACT_IDS)
+                                 else "ios" if act in set(FB_IOS_ACT_IDS)
+                                 else "UNCONFIGURED"),
+                        "in_config": act in configured}
+                out["visible"].append(item)
+                if (not item["in_config"]) and spend and spend > 0:
+                    out["missing_with_spend"].append(item)
+            nxt = (j.get("paging") or {}).get("next")
+            url, params = (nxt, None) if nxt else (None, None)
+    except Exception as e:
+        out["error"] = str(e)[:300]
+    out["visible_count"] = len(out["visible"])
+    out["missing_count"]  = len(out["missing_with_spend"])
+    return jsonify(out)
 
 
 if __name__ == "__main__":

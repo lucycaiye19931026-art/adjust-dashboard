@@ -45,8 +45,168 @@ TT_BASE         = "https://business-api.tiktok.com/open_api/v1.3"
 # ── iOS 专属配置 ──────────────────────────────────────────
 IOS_APP_TOKEN   = os.environ.get("IOS_ADJUST_APP_TOKEN", "du1u32cgaigw")
 IOS_KEY_CH      = ["Facebook", "TikTok for Business", "Apple"]
-FB_IOS_ACT_IDS  = ["act_826668223504196", "act_485941130935481", "act_1050911951210157", "act_2487386801730510"]
+FB_IOS_ACT_IDS  = ["act_826668223504196", "act_485941130935481", "act_1050911951210157", "act_2487386801730510", "act_2547112895720531", "act_1032438845801223"]
 TT_IOS_ADV_ID   = os.environ.get("TT_IOS_ADV_ID", "7358007484973563921")
+
+
+# ── Apple Search Ads API 配置（凭证只读环境变量，勿硬编码）──
+# 需要 Render Environment 配置：
+#   ASA_CLIENT_ID / ASA_TEAM_ID / ASA_KEY_ID / ASA_ORG_ID / ASA_PRIVATE_KEY
+# ASA_PRIVATE_KEY 为 PKCS8 私钥全文（含 BEGIN/END 行）
+ASA_CLIENT_ID   = os.environ.get("ASA_CLIENT_ID", "")
+ASA_TEAM_ID     = os.environ.get("ASA_TEAM_ID", "")
+ASA_KEY_ID      = os.environ.get("ASA_KEY_ID", "")
+ASA_ORG_ID      = os.environ.get("ASA_ORG_ID", "8038560")   # 飞书-Pesoloan-1211
+ASA_PRIVATE_KEY = os.environ.get("ASA_PRIVATE_KEY", "")
+ASA_BASE        = "https://api.searchads.apple.com/api/v5"
+ASA_AUTH_URL    = "https://appleid.apple.com/auth/oauth2/token"
+
+_asa_token_cache = {"token": None, "exp": 0}
+_asa_spend_cache = {"data": {}, "ts": {}}
+_ASA_TTL = 60
+
+
+def asa_date_range(period):
+    """ASA 日期范围（与其它渠道口径一致，UTC+8）"""
+    t  = now8()
+    td = t.strftime("%Y-%m-%d")
+    yd = (t - timedelta(days=1)).strftime("%Y-%m-%d")
+    ranges = {
+        "today":     (td, td),
+        "yesterday": (yd, yd),
+        "3days":     ((t - timedelta(days=2)).strftime("%Y-%m-%d"), td),
+        "7days":     ((t - timedelta(days=6)).strftime("%Y-%m-%d"), td),
+        "month":     (t.replace(day=1).strftime("%Y-%m-%d"), td),
+    }
+    return ranges.get(period, (td, td))
+
+
+def _asa_get_token():
+    """用 ES256 JWT 换 access_token；缓存至过期前 5 分钟"""
+    import time as _t
+    now = _t.time()
+    if _asa_token_cache["token"] and now < _asa_token_cache["exp"] - 300:
+        return _asa_token_cache["token"]
+    if not (ASA_CLIENT_ID and ASA_TEAM_ID and ASA_KEY_ID and ASA_PRIVATE_KEY):
+        return None
+    try:
+        import jwt as _jwt
+        iat = int(now)
+        client_secret = _jwt.encode(
+            {"sub": ASA_CLIENT_ID, "aud": "https://appleid.apple.com",
+             "iat": iat, "exp": iat + 86400 * 180, "iss": ASA_TEAM_ID},
+            ASA_PRIVATE_KEY, algorithm="ES256",
+            headers={"alg": "ES256", "kid": ASA_KEY_ID})
+        r = requests.post(ASA_AUTH_URL,
+            headers={"Host": "appleid.apple.com",
+                     "Content-Type": "application/x-www-form-urlencoded"},
+            params={"grant_type": "client_credentials",
+                    "client_id": ASA_CLIENT_ID,
+                    "client_secret": client_secret,
+                    "scope": "searchadsorg"}, timeout=25)
+        if r.status_code != 200:
+            return None
+        d = r.json()
+        tok = d.get("access_token")
+        if tok:
+            _asa_token_cache["token"] = tok
+            _asa_token_cache["exp"] = now + int(d.get("expires_in") or 3600)
+        return tok
+    except Exception:
+        return None
+
+
+def _asa_headers():
+    tok = _asa_get_token()
+    if not tok:
+        return None
+    return {"Authorization": f"Bearer {tok}",
+            "X-AP-Context": f"orgId={ASA_ORG_ID}",
+            "Content-Type": "application/json"}
+
+
+def _asa_fetch(period):
+    """
+    一次拉取 ASA campaign + adgroup 两层消耗（60 秒缓存）
+    返回 {"total": float, "campaign": {name: spend}, "adgroup": {camp: {ag: spend}}}
+    """
+    import time as _t
+    since, until = asa_date_range(period)
+    ck = f"{period}:{since}:{until}"
+    now = _t.time()
+    if ck in _asa_spend_cache["data"] and now - _asa_spend_cache["ts"].get(ck, 0) < _ASA_TTL:
+        return _asa_spend_cache["data"][ck]
+
+    empty = {"total": 0.0, "campaign": {}, "adgroup": {}}
+    H = _asa_headers()
+    if not H:
+        return empty
+
+    campaign, adgroup, cmap = {}, {}, {}
+    try:
+        rc = requests.post(f"{ASA_BASE}/reports/campaigns", headers=H, json={
+            "startTime": since, "endTime": until,
+            "selector": {"orderBy": [{"field": "localSpend", "sortOrder": "DESCENDING"}],
+                         "pagination": {"offset": 0, "limit": 1000}},
+            "groupBy": ["countryOrRegion"],
+            "timeZone": "ORTZ", "returnRecordsWithNoMetrics": False,
+            "returnRowTotals": True, "returnGrandTotals": True}, timeout=30)
+        if rc.status_code != 200:
+            return empty
+        for row in ((rc.json().get("data") or {}).get("reportingDataResponse") or {}).get("row") or []:
+            md  = row.get("metadata") or {}
+            tot = row.get("total") or {}
+            sp  = float((tot.get("localSpend") or {}).get("amount") or 0)
+            cid, cname = md.get("campaignId"), md.get("campaignName")
+            if cname and sp > 0:
+                cmap[cid] = cname
+                campaign[cname] = round(campaign.get(cname, 0) + sp, 2)
+    except Exception:
+        return empty
+
+    # adgroup：仅对有消耗的 campaign 展开（与 FB/TikTok 规则一致）
+    for cid, cname in cmap.items():
+        try:
+            r = requests.post(f"{ASA_BASE}/reports/campaigns/{cid}/adgroups", headers=H, json={
+                "startTime": since, "endTime": until,
+                "selector": {"orderBy": [{"field": "localSpend", "sortOrder": "DESCENDING"}],
+                             "pagination": {"offset": 0, "limit": 1000}},
+                "timeZone": "ORTZ", "returnRecordsWithNoMetrics": False,
+                "returnRowTotals": True, "returnGrandTotals": False}, timeout=30)
+            if r.status_code != 200:
+                continue
+            for row in ((r.json().get("data") or {}).get("reportingDataResponse") or {}).get("row") or []:
+                md  = row.get("metadata") or {}
+                tot = row.get("total") or {}
+                sp  = float((tot.get("localSpend") or {}).get("amount") or 0)
+                aname = md.get("adGroupName")
+                if aname and sp > 0:      # 只保留有消耗的 adgroup
+                    adgroup.setdefault(cname, {})[aname] = round(
+                        adgroup.get(cname, {}).get(aname, 0) + sp, 2)
+        except Exception:
+            continue
+
+    result = {"total": round(sum(campaign.values()), 2),
+              "campaign": campaign, "adgroup": adgroup}
+    _asa_spend_cache["data"][ck] = result
+    _asa_spend_cache["ts"][ck] = now
+    return result
+
+
+def fetch_asa_channel_spend(period):
+    """ASA 渠道总消耗（真实，替代 Adjust 回传）"""
+    return _asa_fetch(period)["total"]
+
+
+def fetch_asa_campaign_spend(period):
+    """ASA Campaign 级消耗 {campaign_name: spend}"""
+    return _asa_fetch(period)["campaign"]
+
+
+def fetch_asa_adgroup_spend(period):
+    """ASA Ad Group 级消耗 {campaign_name: {adgroup_name: spend}}"""
+    return _asa_fetch(period)["adgroup"]
+
 
 BASE_PARAMS = {
     "metrics":            "attribution_clicks,installs,cost,register_success_events,apply_for_loan_events,loan_success_events,first_loan_amount_revenue",
@@ -1195,9 +1355,23 @@ def api_ios_campaign():
                     loan = r.get("loan") or 0
                     r["cps"] = round(r["cost"] / loan, 2) if loan > 0 and r["cost"] > 0 else None
 
-        # Google/ASA：installs=0 置0，其余保留 Adjust 归因消耗
+        # ★ 注入 Apple Search Ads 真实消耗（直连 ASA API，替代 Adjust 回传）
+        #   Adjust 回传的 ASA 消耗实测漏报约 73%，故改为 ASA API 直连
+        asa_camp = fetch_asa_campaign_spend(period)
         for r in rows:
-            if r["channel"] in ("Google Ads", "Apple"):
+            if r["channel"] == "Apple":
+                cname    = r.get("campaign", "")
+                installs = r.get("installs") or 0
+                if installs == 0:
+                    r["cost"] = 0.0; r["cps"] = None
+                elif cname in asa_camp:
+                    r["cost"] = asa_camp[cname]
+                    loan = r.get("loan") or 0
+                    r["cps"] = round(r["cost"] / loan, 2) if loan > 0 and r["cost"] > 0 else None
+
+        # Google：installs=0 置0，其余保留 Adjust 归因消耗
+        for r in rows:
+            if r["channel"] == "Google Ads":
                 if (r.get("installs") or 0) == 0:
                     r["cost"] = 0.0; r["cps"] = None
 
@@ -1215,6 +1389,9 @@ def api_ios_campaign():
         # channel 小计 cost 用真实消耗替换
         fb_ios_ch  = fetch_fb_ios_channel_spend(period)
         tt_ios_ch  = fetch_tt_ios_channel_spend(period)
+        asa_ch     = fetch_asa_channel_spend(period)      # ★ ASA 真实消耗
+        if "Apple" in ch_totals and asa_ch > 0:
+            ch_totals["Apple"]["cost"] = asa_ch
         if "Facebook" in ch_totals:
             ch_totals["Facebook"]["cost"] = fb_ios_ch
         if "TikTok for Business" in ch_totals:
@@ -1247,18 +1424,23 @@ def api_ios_campaign():
         try:
             fb_ag = fetch_fb_ios_adgroup_spend(period)
             tt_ag = fetch_tt_ios_adgroup_spend(period)
+            asa_ag = fetch_asa_adgroup_spend(period)          # ★ ASA adgroup 细分
             # 以 rows 里注入后的真实 cost 为准，只保留 spend>0 的 campaign 展开 adgroup
             fb_spend_camps = {r["campaign"] for r in rows if r["channel"] == "Facebook"            and (r.get("cost") or 0) > 0}
             tt_spend_camps = {r["campaign"] for r in rows if r["channel"] == "TikTok for Business" and (r.get("cost") or 0) > 0}
+            asa_spend_camps = {r["campaign"] for r in rows if r["channel"] == "Apple"              and (r.get("cost") or 0) > 0}
             fb_ag = {c: ag for c, ag in fb_ag.items() if c in fb_spend_camps}
             tt_ag = {c: ag for c, ag in tt_ag.items() if c in tt_spend_camps}
+            asa_ag = {c: ag for c, ag in asa_ag.items() if c in asa_spend_camps}
             fb_adj_camps = list(fb_spend_camps)
             tt_adj_camps = list(tt_spend_camps)
+            asa_adj_camps = list(asa_spend_camps)
             # ★ 拉取 Adjust adgroup 级转化数据（iOS app_token）
             adj_conv = fetch_adjust_adgroup(period, app_token=IOS_APP_TOKEN)
             adgroups = {
                 "Facebook": _match_adgroup_map(fb_ag, fb_adj_camps, adj_conv.get("Facebook")),
                 "TikTok for Business": _match_adgroup_map(tt_ag, tt_adj_camps, adj_conv.get("TikTok for Business")),
+                "Apple": _match_adgroup_map(asa_ag, asa_adj_camps, adj_conv.get("Apple")),
             }
         except Exception:
             pass
@@ -1341,6 +1523,8 @@ MEDIA_ACCOUNTS = [
     {"side": "ios", "channel": "facebook", "account_name": None, "account_id": "485941130935481",  "fb_act": "act_485941130935481",  "balance_type": "unknown"},
     {"side": "ios", "channel": "facebook", "account_name": None, "account_id": "1050911951210157", "fb_act": "act_1050911951210157", "balance_type": "unknown"},
     {"side": "ios", "channel": "facebook", "account_name": None, "account_id": "2487386801730510", "fb_act": "act_2487386801730510", "balance_type": "unknown"},
+    {"side": "ios", "channel": "facebook", "account_name": None, "account_id": "2547112895720531", "fb_act": "act_2547112895720531", "balance_type": "unknown"},
+    {"side": "ios", "channel": "facebook", "account_name": None, "account_id": "1032438845801223", "fb_act": "act_1032438845801223", "balance_type": "unknown"},
     # ---- TikTok（Android / iOS）----
     {"side": "android", "channel": "tiktok", "account_name": None, "account_id": TT_ADV_ID,     "tt_adv": TT_ADV_ID,     "balance_type": "unknown"},
     {"side": "ios",     "channel": "tiktok", "account_name": None, "account_id": TT_IOS_ADV_ID, "tt_adv": TT_IOS_ADV_ID, "balance_type": "unknown"},

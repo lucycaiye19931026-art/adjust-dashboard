@@ -225,6 +225,59 @@ BASE_PARAMS = {
 
 app = Flask(__name__)
 
+# ── Campaign 名称规范化匹配（修复消耗丢失）────────────────
+# 问题：Adjust 侧 campaign 名可能带 URL 编码（尾部 %20 等）或首尾空白，
+#       媒体侧为干净名 → 精确匹配失败 → 该 campaign 消耗注入不上、凭空消失。
+# 方案：精确匹配优先；失败则用规范化键（URL解码+去空白+小写）兜底匹配。
+from urllib.parse import unquote as _unquote
+
+
+def _norm_camp(name):
+    """campaign 名规范化：URL解码 → 去首尾空白 → 折叠内部空白 → 小写"""
+    if not name:
+        return ""
+    t = str(name)
+    for _ in range(2):                 # 处理 %2520 这类二次编码
+        try:
+            u = _unquote(t)
+        except Exception:
+            break
+        if u == t:
+            break
+        t = u
+    t = t.replace("\u00a0", " ")       # 不换行空格
+    t = re.sub(r"\s+", " ", t).strip()
+    return t.lower()
+
+
+def _norm_index(spend_map):
+    """把 {name: spend} 建成 {规范化名: spend}（同名累加）"""
+    idx = {}
+    for k, v in (spend_map or {}).items():
+        nk = _norm_camp(k)
+        if nk:
+            idx[nk] = round(idx.get(nk, 0) + (v or 0), 2)
+    return idx
+
+
+def _pick_spend(name, spend_map, norm_idx=None):
+    """
+    取某 campaign 的媒体侧消耗：精确匹配优先，规范化兜底。
+    返回 (spend, matched) —— matched=False 表示两种方式都没匹配上。
+    """
+    if not spend_map:
+        return (0.0, False)
+    if name in spend_map:
+        return (spend_map[name], True)
+    idx = norm_idx if norm_idx is not None else _norm_index(spend_map)
+    nk = _norm_camp(name)
+    if nk and nk in idx:
+        return (idx[nk], True)
+    return (0.0, False)
+
+
+
+
 # ── Adjust 报表请求缓存（60 秒）──────────────────────────
 # Channel/Campaign 接口会多次请求 Adjust（主查询 + 全渠道汇总），
 # 相同 params 在 60 秒内直接复用，避免重复等待。
@@ -747,7 +800,9 @@ def fetch_adjust_adgroup(period, channels=None, app_token=None):
 
 
 def _norm_name(s):
-    return (s or "").replace(" ", "").lower()
+    """名称归一化（adgroup/campaign 模糊匹配用）
+    含 URL 解码，兼容 Adjust 侧 %20 等编码差异（如 Pesoloan-adc-s-loan-2%20）"""
+    return _norm_camp(s).replace(" ", "")
 
 
 def _match_adgroup_map(adgroup_map, adjust_campaigns, adj_conv=None):
@@ -1073,10 +1128,12 @@ def api_campaign():
                 if installs == 0:
                     r["cost"] = 0.0
                     r["cps"]  = None
-                elif camp_name in fb_camp_spend:
-                    r["cost"] = fb_camp_spend[camp_name]
-                    loan = r.get("loan") or 0
-                    r["cps"] = round(r["cost"] / loan, 2) if loan > 0 and r["cost"] > 0 else None
+                else:
+                    _sp, _ok = _pick_spend(camp_name, fb_camp_spend)
+                    if _ok:
+                        r["cost"] = _sp
+                        loan = r.get("loan") or 0
+                        r["cps"] = round(r["cost"] / loan, 2) if loan > 0 and r["cost"] > 0 else None
 
         # ★ 注入 TikTok Campaign 真实消耗（严格精确匹配；installs=0 则消耗强制置0）
         tt_camp_spend = fetch_tt_campaign_spend(period)
@@ -1087,10 +1144,12 @@ def api_campaign():
                 if installs == 0:
                     r["cost"] = 0.0
                     r["cps"]  = None
-                elif camp_name in tt_camp_spend:
-                    r["cost"] = tt_camp_spend[camp_name]
-                    loan = r.get("loan") or 0
-                    r["cps"] = round(r["cost"] / loan, 2) if loan > 0 and r["cost"] > 0 else None
+                else:
+                    _sp, _ok = _pick_spend(camp_name, tt_camp_spend)
+                    if _ok:
+                        r["cost"] = _sp
+                        loan = r.get("loan") or 0
+                        r["cps"] = round(r["cost"] / loan, 2) if loan > 0 and r["cost"] > 0 else None
 
         # ★ 注入 Google Ads Campaign 真实消耗（严格精确匹配；installs=0 则消耗强制置0）
         gg_camp_spend = fetch_gg_campaign_spend(period)
@@ -1101,10 +1160,12 @@ def api_campaign():
                 if installs == 0:
                     r["cost"] = 0.0
                     r["cps"]  = None
-                elif camp_name in gg_camp_spend:
-                    r["cost"] = gg_camp_spend[camp_name]
-                    loan = r.get("loan") or 0
-                    r["cps"] = round(r["cost"] / loan, 2) if loan > 0 and r["cost"] > 0 else None
+                else:
+                    _sp, _ok = _pick_spend(camp_name, gg_camp_spend)
+                    if _ok:
+                        r["cost"] = _sp
+                        loan = r.get("loan") or 0
+                        r["cps"] = round(r["cost"] / loan, 2) if loan > 0 and r["cost"] > 0 else None
 
         ch_order = {ch: i for i, ch in enumerate(KEY_CH)}
         rows.sort(key=lambda x: (ch_order.get(x["channel"], 99), -(x.get("cost") or 0)))
@@ -1230,6 +1291,17 @@ def api_ios_channel():
                 r["cps"] = round(tt_ios_spend / loan, 2) if loan > 0 else None
                 r["cps_fixed"] = False
 
+        # ★ 注入 Apple Search Ads 真实消耗（直连 ASA API，替代 Adjust 回传）
+        asa_spend = fetch_asa_channel_spend(period)
+        if asa_spend > 0:
+            for r in rows:
+                if r["channel"] == "Apple":
+                    r["cost"] = asa_spend
+                    r["cost_formula"] = "ASA API"
+                    loan = r.get("loan") or 0
+                    r["cps"] = round(asa_spend / loan, 2) if loan > 0 else None
+                    r["cps_fixed"] = False
+
         rows.sort(key=lambda x: (0 if x["channel"] in IOS_KEY_CH else 1, -(x.get("cost") or 0)))
 
         # 汇总（Total = 全渠道汇总，与 Adjust 后台一致）
@@ -1338,10 +1410,12 @@ def api_ios_campaign():
                 installs = r.get("installs") or 0
                 if installs == 0:
                     r["cost"] = 0.0; r["cps"] = None
-                elif r.get("campaign","") in fb_ios_camp:
-                    r["cost"] = fb_ios_camp[r["campaign"]]
-                    loan = r.get("loan") or 0
-                    r["cps"] = round(r["cost"] / loan, 2) if loan > 0 and r["cost"] > 0 else None
+                else:
+                    _sp, _ok = _pick_spend(r.get("campaign",""), fb_ios_camp)
+                    if _ok:
+                        r["cost"] = _sp
+                        loan = r.get("loan") or 0
+                        r["cps"] = round(r["cost"] / loan, 2) if loan > 0 and r["cost"] > 0 else None
 
         # 注入 TikTok iOS Campaign 真实消耗（installs=0 置0）
         tt_ios_camp = fetch_tt_ios_campaign_spend(period)
@@ -1350,10 +1424,12 @@ def api_ios_campaign():
                 installs = r.get("installs") or 0
                 if installs == 0:
                     r["cost"] = 0.0; r["cps"] = None
-                elif r.get("campaign","") in tt_ios_camp:
-                    r["cost"] = tt_ios_camp[r["campaign"]]
-                    loan = r.get("loan") or 0
-                    r["cps"] = round(r["cost"] / loan, 2) if loan > 0 and r["cost"] > 0 else None
+                else:
+                    _sp, _ok = _pick_spend(r.get("campaign",""), tt_ios_camp)
+                    if _ok:
+                        r["cost"] = _sp
+                        loan = r.get("loan") or 0
+                        r["cps"] = round(r["cost"] / loan, 2) if loan > 0 and r["cost"] > 0 else None
 
         # ★ 注入 Apple Search Ads 真实消耗（直连 ASA API，替代 Adjust 回传）
         #   Adjust 回传的 ASA 消耗实测漏报约 73%，故改为 ASA API 直连
@@ -1364,10 +1440,12 @@ def api_ios_campaign():
                 installs = r.get("installs") or 0
                 if installs == 0:
                     r["cost"] = 0.0; r["cps"] = None
-                elif cname in asa_camp:
-                    r["cost"] = asa_camp[cname]
-                    loan = r.get("loan") or 0
-                    r["cps"] = round(r["cost"] / loan, 2) if loan > 0 and r["cost"] > 0 else None
+                else:
+                    _sp, _ok = _pick_spend(cname, asa_camp)
+                    if _ok:
+                        r["cost"] = _sp
+                        loan = r.get("loan") or 0
+                        r["cps"] = round(r["cost"] / loan, 2) if loan > 0 and r["cost"] > 0 else None
 
         # Google：installs=0 置0，其余保留 Adjust 归因消耗
         for r in rows:

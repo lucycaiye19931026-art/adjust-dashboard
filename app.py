@@ -59,11 +59,14 @@ ASA_KEY_ID      = os.environ.get("ASA_KEY_ID", "")
 ASA_ORG_ID      = os.environ.get("ASA_ORG_ID", "8038560")   # 飞书-Pesoloan-1211
 ASA_PRIVATE_KEY = os.environ.get("ASA_PRIVATE_KEY", "")
 ASA_BASE        = "https://api.searchads.apple.com/api/v5"
+# 是否拉取 ASA adgroup 明细：每个 campaign 需 1 次串行请求，开启会显著变慢
+# Render 免费实例建议关闭；需要 adgroup 细分时设为 "1"
+ASA_FETCH_ADGROUP = os.environ.get("ASA_FETCH_ADGROUP", "0") == "1"
 ASA_AUTH_URL    = "https://appleid.apple.com/auth/oauth2/token"
 
 _asa_token_cache = {"token": None, "exp": 0}
 _asa_spend_cache = {"data": {}, "ts": {}}
-_ASA_TTL = 60
+_ASA_TTL = 180
 
 
 def asa_date_range(period):
@@ -103,7 +106,7 @@ def _asa_get_token():
             params={"grant_type": "client_credentials",
                     "client_id": ASA_CLIENT_ID,
                     "client_secret": client_secret,
-                    "scope": "searchadsorg"}, timeout=25)
+                    "scope": "searchadsorg"}, timeout=15)
         if r.status_code != 200:
             return None
         d = r.json()
@@ -165,7 +168,8 @@ def _asa_fetch(period):
         return empty
 
     # adgroup：仅对有消耗的 campaign 展开（与 FB/TikTok 规则一致）
-    for cid, cname in cmap.items():
+    # 性能开关：关闭时跳过（每 campaign 需 1 次串行请求）
+    for cid, cname in (cmap.items() if ASA_FETCH_ADGROUP else []):
         try:
             r = requests.post(f"{ASA_BASE}/reports/campaigns/{cid}/adgroups", headers=H, json={
                 "startTime": since, "endTime": until,
@@ -282,10 +286,10 @@ def _pick_spend(name, spend_map, norm_idx=None):
 # Channel/Campaign 接口会多次请求 Adjust（主查询 + 全渠道汇总），
 # 相同 params 在 60 秒内直接复用，避免重复等待。
 _adjust_cache = {"data": {}, "ts": {}}
-_ADJUST_TTL = 60
+_ADJUST_TTL = 180
 
 
-def _adjust_cached_get(url, headers=None, params=None, timeout=25):
+def _adjust_cached_get(url, headers=None, params=None, timeout=15):
     """带 60 秒缓存的 Adjust GET；缓存键 = 关键查询参数"""
     import time as _t
     try:
@@ -348,14 +352,14 @@ def fb_date_range(period):
 from concurrent.futures import ThreadPoolExecutor as _TPE
 
 _fb_unified_cache = {"data": {}, "ts": {}}
-_FB_CACHE_TTL = 60
+_FB_CACHE_TTL = 180
 
 
 def _fb_fetch_one_account(args):
     """拉单个账户 adset 级消耗（含 campaign_name），返回 (act_id, rows, ok)"""
     act_id, token, since, until = args
     try:
-        r = requests.get(f"{FB_BASE}/{act_id}/insights", timeout=25, params={
+        r = requests.get(f"{FB_BASE}/{act_id}/insights", timeout=15, params={
             "access_token": token,
             "fields":       "campaign_name,adset_name,spend",
             "time_range":   _json.dumps({"since": since, "until": until}),
@@ -389,7 +393,7 @@ def fb_unified_spend(period, act_ids=None, cache_tag="and"):
 
     tasks = [(a, token, since, until) for a in ids]
     # 并发：账户数不多，一次全开（上限 16 并发，避免触发 FB 限频）
-    with _TPE(max_workers=min(16, max(1, len(tasks)))) as ex:
+    with _TPE(max_workers=min(6, max(1, len(tasks)))) as ex:
         for act_id, rows, ok in ex.map(_fb_fetch_one_account, tasks):
             for row in rows:
                 try:
@@ -526,7 +530,7 @@ def fetch_tt_ios_adgroup_spend(period):
     import time
     now = time.time()
     ck = _adgroup_cache_key("tt_ios", period)
-    if _gg_spend_cache["data"].get(ck) and now - _gg_spend_cache["ts"] < 60:
+    if _gg_spend_cache["data"].get(ck) and now - _gg_spend_cache["ts"] < 180:
         return _gg_spend_cache["data"][ck]
     since, until = tt_date_range(period)
     result = {}
@@ -634,7 +638,7 @@ def fetch_gg_spend(period):
     import time
     now = time.time()
     cache_key = f"spend_{period}"
-    if _gg_spend_cache["data"].get(cache_key) and now - _gg_spend_cache["ts"] < 60:
+    if _gg_spend_cache["data"].get(cache_key) and now - _gg_spend_cache["ts"] < 180:
         return _gg_spend_cache["data"][cache_key]
 
     since, until = _gg_date_range(period)
@@ -655,7 +659,7 @@ def fetch_gg_campaign_spend(period):
     import time
     now = time.time()
     cache_key = f"camp_{period}"
-    if _gg_spend_cache["data"].get(cache_key) and now - _gg_spend_cache["ts"] < 60:
+    if _gg_spend_cache["data"].get(cache_key) and now - _gg_spend_cache["ts"] < 180:
         return _gg_spend_cache["data"][cache_key]
 
     since, until = _gg_date_range(period)
@@ -690,7 +694,7 @@ def fetch_tt_adgroup_spend(period):
     import time
     now = time.time()
     ck = _adgroup_cache_key("tt", period)
-    if _gg_spend_cache["data"].get(ck) and now - _gg_spend_cache["ts"] < 60:
+    if _gg_spend_cache["data"].get(ck) and now - _gg_spend_cache["ts"] < 180:
         return _gg_spend_cache["data"][ck]
     since, until = tt_date_range(period)
     result = {}
@@ -729,7 +733,7 @@ def fetch_gg_adgroup_spend(period):
     import time
     now = time.time()
     ck = _adgroup_cache_key("gg", period)
-    if _gg_spend_cache["data"].get(ck) and now - _gg_spend_cache["ts"] < 60:
+    if _gg_spend_cache["data"].get(ck) and now - _gg_spend_cache["ts"] < 180:
         return _gg_spend_cache["data"][ck]
     since, until = _gg_date_range(period)
     query = f"""
@@ -758,12 +762,12 @@ def fetch_adjust_adgroup(period, channels=None, app_token=None):
     import time
     now = time.time()
     ck = _adgroup_cache_key("adj_" + (app_token or APP_TOKEN), period)
-    if _gg_spend_cache["data"].get(ck) and now - _gg_spend_cache["ts"] < 60:
+    if _gg_spend_cache["data"].get(ck) and now - _gg_spend_cache["ts"] < 180:
         return _gg_spend_cache["data"][ck]
     start, end = date_range(period)
     result = {}
     try:
-        resp = _adjust_cached_get(BASE_URL, headers=HEADERS, timeout=25, params={
+        resp = _adjust_cached_get(BASE_URL, headers=HEADERS, timeout=15, params={
             "app_token__in": app_token or APP_TOKEN,
             "date_period":   f"{start}:{end}",
             "dimensions":    "channel,campaign_network,adgroup_network",
@@ -937,7 +941,7 @@ def parse_rows(rows_raw, mode="channel"):
 
 # ── 全渠道汇总缓存（避免 Channel/Campaign 接口重复请求 Adjust）──
 _full_total_cache = {"data": {}, "ts": {}}
-_FULL_TOTAL_TTL = 60
+_FULL_TOTAL_TTL = 180
 
 
 def _full_total_cached(fn, tag, period):
@@ -957,7 +961,7 @@ def _compute_full_channel_total_raw(period):
     复用 /api/channel 的合并 + 真实消耗注入逻辑，但只返回汇总后的 total 字典。"""
     start, end = date_range(period)
     dims = "channel,day" if has_day(period) else "channel"
-    resp = _adjust_cached_get(BASE_URL, headers=HEADERS, timeout=25, params={
+    resp = _adjust_cached_get(BASE_URL, headers=HEADERS, timeout=15, params={
         "app_token__in": APP_TOKEN,
         "date_period":   f"{start}:{end}",
         "dimensions":    dims,
@@ -1017,7 +1021,7 @@ def api_channel():
     start, end = date_range(period)
     dims = "channel,day" if has_day(period) else "channel"
     try:
-        resp = _adjust_cached_get(BASE_URL, headers=HEADERS, timeout=25, params={
+        resp = _adjust_cached_get(BASE_URL, headers=HEADERS, timeout=15, params={
             "app_token__in": APP_TOKEN,
             "date_period":   f"{start}:{end}",
             "dimensions":    dims,
@@ -1106,7 +1110,7 @@ def api_campaign():
     # Campaign 看板始终按 campaign 汇总（近3天/近7天/本月均为区间汇总，不分日拆行）
     dims = "channel,campaign"
     try:
-        resp = _adjust_cached_get(BASE_URL, headers=HEADERS, timeout=25, params={
+        resp = _adjust_cached_get(BASE_URL, headers=HEADERS, timeout=15, params={
             "app_token__in": APP_TOKEN,
             "date_period":   f"{start}:{end}",
             "dimensions":    dims,
@@ -1259,7 +1263,7 @@ def api_ios_channel():
     dims = "channel,day" if has_day(period) else "channel"
     try:
         resp = _adjust_cached_get(BASE_URL, headers={"Authorization": f"Bearer {USER_TOKEN}"},
-                            timeout=25, params={
+                            timeout=15, params={
                                 "app_token__in": IOS_APP_TOKEN,
                                 "date_period":   f"{start}:{end}",
                                 "dimensions":    dims,
@@ -1339,7 +1343,7 @@ def _compute_full_ios_channel_total_raw(period):
     start, end = date_range(period)
     dims = "channel,day" if has_day(period) else "channel"
     resp = _adjust_cached_get(BASE_URL, headers={"Authorization": f"Bearer {USER_TOKEN}"},
-                        timeout=25, params={
+                        timeout=15, params={
                             "app_token__in": IOS_APP_TOKEN,
                             "date_period":   f"{start}:{end}",
                             "dimensions":    dims,
@@ -1390,7 +1394,7 @@ def api_ios_campaign():
     dims = "channel,campaign"
     try:
         resp = _adjust_cached_get(BASE_URL, headers={"Authorization": f"Bearer {USER_TOKEN}"},
-                            timeout=25, params={
+                            timeout=15, params={
                                 "app_token__in": IOS_APP_TOKEN,
                                 "date_period":   f"{start}:{end}",
                                 "dimensions":    dims,
@@ -1925,7 +1929,7 @@ def _fetch_rejected_ads(act_id, side):
     """拉取单个 FB 广告账户下被拒/有问题的广告创意。"""
     out = []
     try:
-        r = requests.get(f"{FB_BASE}/{act_id}/ads", timeout=25, params={
+        r = requests.get(f"{FB_BASE}/{act_id}/ads", timeout=15, params={
             "access_token": get_fb_token(),
             "fields": "name,effective_status,campaign{name},adset{name}",
             "effective_status": '["DISAPPROVED","WITH_ISSUES","PENDING_REVIEW","ADSET_PAUSED","CAMPAIGN_PAUSED","PAUSED","ACTIVE"]',

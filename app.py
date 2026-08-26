@@ -229,6 +229,189 @@ BASE_PARAMS = {
 
 app = Flask(__name__)
 
+# ══════════════════════════════════════════════════════════════════
+# 数据快照层（后台预拉 + 接口秒回）
+# ------------------------------------------------------------------
+# 背景：原实现每次用户访问都实时调 Adjust/FB/TikTok/Google/ASA，
+#       在 Render 免费实例（0.1 CPU）下 Channel 需 28s、Campaign 超时，
+#       页面报「数据加载失败」。
+# 方案：后台线程定时把 4 个接口 × 5 个 period 全部拉好存快照，
+#       用户请求直接读快照（<0.1s）。数据最多滞后 SNAPSHOT_INTERVAL 秒。
+# ══════════════════════════════════════════════════════════════════
+import threading as _th
+import time as _time2
+
+# 预拉间隔（秒）。可用环境变量覆盖；免费实例建议 300~600
+SNAPSHOT_INTERVAL = int(os.environ.get("SNAPSHOT_INTERVAL", "300"))
+# 快照文件路径（Render 容器内 /tmp 可写；重启会丢，属预期）
+SNAPSHOT_FILE = os.environ.get("SNAPSHOT_FILE", "/tmp/dash_snapshot.json")
+# 是否启用后台预拉（设为 "0" 可关闭，退回纯实时模式）
+SNAPSHOT_ENABLED = os.environ.get("SNAPSHOT_ENABLED", "1") == "1"
+# 预拉哪些 period（顺序即优先级，today 最先保证最新）
+SNAPSHOT_PERIODS = ["today", "yesterday", "3days", "7days", "month"]
+
+_snap = {"data": {}, "ts": {}, "lock": _th.Lock(), "started": False,
+         "last_round": None, "rounds": 0, "errors": 0}
+
+
+def _snap_key(view, period):
+    return f"{view}|{period}"
+
+
+def _snap_load_disk():
+    """冷启动时载入磁盘快照，避免实例重启后首屏无数据"""
+    try:
+        if os.path.exists(SNAPSHOT_FILE):
+            with open(SNAPSHOT_FILE, "r", encoding="utf-8") as f:
+                obj = _json.load(f)
+            with _snap["lock"]:
+                _snap["data"].update(obj.get("data") or {})
+                _snap["ts"].update(obj.get("ts") or {})
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _snap_save_disk():
+    try:
+        tmp = SNAPSHOT_FILE + ".tmp"
+        with _snap["lock"]:
+            payload = {"data": _snap["data"], "ts": _snap["ts"],
+                       "saved_at": now8().strftime("%Y-%m-%d %H:%M:%S")}
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(payload, f, ensure_ascii=False)
+        os.replace(tmp, SNAPSHOT_FILE)
+    except Exception:
+        pass
+
+
+def snapshot_get(view, period, max_age=None):
+    """取快照。max_age=None 表示不限年龄（stale 也返回）"""
+    k = _snap_key(view, period)
+    with _snap["lock"]:
+        if k not in _snap["data"]:
+            return None, None
+        val = _snap["data"][k]
+        ts = _snap["ts"].get(k, 0)
+    age = _time2.time() - ts
+    if max_age is not None and age > max_age:
+        return None, age
+    return val, age
+
+
+def snapshot_put(view, period, payload):
+    k = _snap_key(view, period)
+    with _snap["lock"]:
+        _snap["data"][k] = payload
+        _snap["ts"][k] = _time2.time()
+
+
+def snapshot_first(view):
+    """
+    路由装饰器：优先返回快照，未命中则实时执行原逻辑并顺手写入快照。
+    ?fresh=1 可强制绕过快照实时拉取（排错用）。
+    """
+    def deco(fn):
+        import functools
+
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            period = request.args.get("period", "today")
+            if SNAPSHOT_ENABLED and request.args.get("fresh") != "1":
+                val, age = snapshot_get(view, period)
+                if val is not None:
+                    out = dict(val)
+                    out["_cache"] = "snapshot"
+                    out["_age_sec"] = int(age or 0)
+                    return jsonify(out)
+            # 未命中：实时执行原逻辑
+            resp = fn(*args, **kwargs)
+            try:
+                # resp 可能是 Response 或 (Response, code)
+                r0 = resp[0] if isinstance(resp, tuple) else resp
+                obj = r0.get_json(silent=True)
+                if obj and obj.get("ok"):
+                    snapshot_put(view, period, obj)
+            except Exception:
+                pass
+            return resp
+        return wrapper
+    return deco
+
+
+def _snap_refresh_once():
+    """后台串行拉取全部 view×period（串行以免压垮弱 CPU）
+    view 名 / endpoint 名 / URL 路径三者对应；按 endpoint 直取视图函数最稳。"""
+    views = [("channel",      "api_channel",      "/api/channel"),
+             ("campaign",     "api_campaign",     "/api/campaign"),
+             ("ios_channel",  "api_ios_channel",  "/api/ios/channel"),
+             ("ios_campaign", "api_ios_campaign", "/api/ios/campaign")]
+    # today 全部先刷一轮（保证最新数据最快可用），再刷其余 period
+    plans = [(v, ep, p, "today") for (v, ep, p) in views]
+    plans += [(v, ep, p, per) for (v, ep, p) in views
+              for per in SNAPSHOT_PERIODS if per != "today"]
+    for view, endpoint, path, period in plans:
+        try:
+            # 用 test_request_context 复用原接口逻辑，业务代码零改动
+            with app.test_request_context(f"{path}?period={period}&fresh=1"):
+                fn = app.view_functions.get(endpoint)
+                if fn is None:
+                    _snap["errors"] += 1
+                    continue
+                resp = fn()
+                r0 = resp[0] if isinstance(resp, tuple) else resp
+                obj = r0.get_json(silent=True)
+                if obj and obj.get("ok"):
+                    snapshot_put(view, period, obj)
+                else:
+                    _snap["errors"] += 1
+        except Exception:
+            _snap["errors"] += 1
+        _time2.sleep(1)          # 每次之间喘口气，降低 CPU 峰值（弱实例必需）
+    _snap["rounds"] += 1
+    _snap["last_round"] = now8().strftime("%Y-%m-%d %H:%M:%S")
+    _snap_save_disk()
+
+
+def _snap_worker():
+    # 启动稍作延迟，避免与 Web 首次请求抢 CPU
+    _time2.sleep(5)
+    while True:
+        try:
+            _snap_refresh_once()
+        except Exception:
+            _snap["errors"] += 1
+        _time2.sleep(SNAPSHOT_INTERVAL)
+
+
+def snapshot_start():
+    if not SNAPSHOT_ENABLED or _snap["started"]:
+        return
+    _snap["started"] = True
+    _snap_load_disk()
+    t = _th.Thread(target=_snap_worker, name="snapshot-worker", daemon=True)
+    t.start()
+
+
+@app.route("/internal/snapshot/status")
+def snapshot_status():
+    """快照健康状态（排错用，无敏感信息）"""
+    with _snap["lock"]:
+        items = []
+        for k, ts in sorted(_snap["ts"].items()):
+            items.append({"key": k, "age_sec": int(_time2.time() - ts),
+                          "has_data": k in _snap["data"]})
+    return jsonify({"enabled": SNAPSHOT_ENABLED,
+                    "interval_sec": SNAPSHOT_INTERVAL,
+                    "rounds": _snap["rounds"],
+                    "errors": _snap["errors"],
+                    "last_round": _snap["last_round"],
+                    "count": len(items), "items": items})
+
+
+
+
 # ── Campaign 名称规范化匹配（修复消耗丢失）────────────────
 # 问题：Adjust 侧 campaign 名可能带 URL 编码（尾部 %20 等）或首尾空白，
 #       媒体侧为干净名 → 精确匹配失败 → 该 campaign 消耗注入不上、凭空消失。
@@ -1016,6 +1199,7 @@ def _compute_full_channel_total_raw(period):
 # ── API 路由 ─────────────────────────────────────────────
 
 @app.route("/api/channel")
+@snapshot_first("channel")
 def api_channel():
     period = request.args.get("period", "today")
     start, end = date_range(period)
@@ -1103,6 +1287,7 @@ def api_channel():
 
 
 @app.route("/api/campaign")
+@snapshot_first("campaign")
 def api_campaign():
     period = request.args.get("period", "yesterday")
     start = request.args.get("start") or date_range(period)[0]
@@ -1257,6 +1442,7 @@ def api_campaign():
 # ── iOS API 路由 ──────────────────────────────────────────
 
 @app.route("/api/ios/channel")
+@snapshot_first("ios_channel")
 def api_ios_channel():
     period = request.args.get("period", "today")
     start, end = date_range(period)
@@ -1387,6 +1573,7 @@ def _compute_full_ios_channel_total_raw(period):
 
 
 @app.route("/api/ios/campaign")
+@snapshot_first("ios_campaign")
 def api_ios_campaign():
     period = request.args.get("period", "yesterday")
     start, end = date_range(period)
@@ -2076,6 +2263,13 @@ def compute_full_channel_total(period):
 def compute_full_ios_channel_total(period):
     """iOS 全渠道汇总（60 秒缓存包装）"""
     return _full_total_cached(_compute_full_ios_channel_total_raw, "ios", period)
+
+
+# 启动后台快照预拉（gunicorn 导入模块时即生效）
+try:
+    snapshot_start()
+except Exception:
+    pass
 
 
 if __name__ == "__main__":

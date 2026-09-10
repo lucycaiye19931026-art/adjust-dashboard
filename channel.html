@@ -115,14 +115,16 @@ let PLATFORM='android';
 const IOS_KEY_CH=['Facebook','TikTok for Business','Apple'];
 const AND_KEY_CH=['Google Ads','Facebook','TikTok for Business'];
 const DATES=[['today','今日'],['yesterday','昨日'],['3days','近3天'],['7days','近7天'],['month','本月']];
-const CMP_METRICS=[['clicks','Clicks'],['installs','Installs'],['cost','Ad Spend'],['register','Register'],['apply','Apply'],['loan','Loan'],['revenue','Revenue'],['cps','CPS']];
+const CMP_METRICS=[['clicks','Clicks'],['installs','Installs'],['cost','Ad Spend'],['register','Register'],['apply','Apply'],['loan','Loan'],['revenue','Revenue'],['avg_loan','件均'],['roi','ROI'],['cps','CPS']];
 const ALL={android:{},ios:{}};
 const n=v=>v==null?'—':Number(v).toLocaleString();
 const m=v=>(!v&&v!==0)||v===0?'—':'$'+Number(v).toLocaleString('en',{minimumFractionDigits:2,maximumFractionDigits:2});
 const cpsHtml=(v,fixed)=>{if(!v||v===0)return '<span class="c-na">—</span>';const c=v<20?'b-lo':v<30?'b-mi':'b-hi';const tag=fixed?'<span style="font-size:.63rem;color:#aaa880;margin-left:2px">固定</span>':'';return `<span class="badge ${c}">$${Number(v).toFixed(2)}</span>${tag}`;};
-function fmtMetric(mk,v,fixed){if(mk==='cps')return cpsHtml(v,fixed);if(mk==='cost'||mk==='revenue')return m(v);return n(v);}
-function thead(){return `<thead><tr><th style="text-align:left">Channel</th><th>Clicks</th><th>Installs</th><th>Ad Spend($)</th><th>Register</th><th>Apply</th><th>Loan</th><th>Revenue($)</th><th>CPS</th></tr></thead>`;}
-function mkRow(r,cls){const costD=r.cost_formula?`${m(r.cost)}<span class="formula">${r.cost_formula}</span>`:m(r.cost);const ch=(r.channel||'—');const safe=ch.replace(/"/g,'&quot;');return `<tr class="${cls} clickable" data-ch="${safe}" onclick="toggleCmp(this)"><td>${ch}</td><td>${n(r.clicks)}</td><td>${n(r.installs)}</td><td class="c-cost">${costD}</td><td>${n(r.register)}</td><td>${n(r.apply)}</td><td class="c-loan">${n(r.loan)}</td><td>${m(r.revenue)}</td><td>${cpsHtml(r.cps,r.cps_fixed)}</td></tr>`;}
+const avgHtml=(v)=>{if(v===null||v===undefined||v===0)return '<span class="c-na">—</span>';return '$'+Number(v).toFixed(2);};
+const roiHtml=(v)=>{if(v===null||v===undefined)return '<span class="c-na">—</span>';const c=v>=1.5?'b-lo':v>=1?'b-mi':'b-hi';return '<span class="badge '+c+'">'+Number(v).toFixed(2)+'x</span>';};
+function fmtMetric(mk,v,fixed){if(mk==='cps')return cpsHtml(v,fixed);if(mk==='avg_loan')return avgHtml(v);if(mk==='roi')return roiHtml(v);if(mk==='cost'||mk==='revenue')return m(v);return n(v);}
+function thead(){return `<thead><tr><th style="text-align:left">Channel</th><th>Clicks</th><th>Installs</th><th>Ad Spend($)</th><th>Register</th><th>Apply</th><th>Loan</th><th>Revenue($)</th><th>件均($)</th><th>ROI</th><th>CPS</th></tr></thead>`;}
+function mkRow(r,cls){const costD=r.cost_formula?`${m(r.cost)}<span class="formula">${r.cost_formula}</span>`:m(r.cost);const ch=(r.channel||'—');const safe=ch.replace(/"/g,'&quot;');return `<tr class="${cls} clickable" data-ch="${safe}" onclick="toggleCmp(this)"><td>${ch}</td><td>${n(r.clicks)}</td><td>${n(r.installs)}</td><td class="c-cost">${costD}</td><td>${n(r.register)}</td><td>${n(r.apply)}</td><td class="c-loan">${n(r.loan)}</td><td>${m(r.revenue)}</td><td>${avgHtml(r.avg_loan)}</td><td>${roiHtml(r.roi)}</td><td>${cpsHtml(r.cps,r.cps_fixed)}</td></tr>`;}
 function isKey(ch){return PLATFORM==='ios'?IOS_KEY_CH.includes(ch):AND_KEY_CH.includes(ch);}
 function findChannelRow(pdata,ch){if(!pdata||pdata==='loading'||pdata==='error')return null;if(ch==='__TOTAL__')return pdata.total;return (pdata.by_channel||[]).find(r=>r.channel===ch)||null;}
 function cmpCard(ch,title){const store=ALL[PLATFORM];let head='<th>日期</th>'+CMP_METRICS.map(a=>`<th>${a[1]}</th>`).join('');let body='';for(const dd of DATES){const dk=dd[0],dl=dd[1];const pdata=store[dk];if(pdata==='loading'||pdata===undefined){body+=`<tr class="loading-row"><td>${dl}</td><td colspan="${CMP_METRICS.length}">⏳ 加载中…</td></tr>`;continue;}if(pdata==='error'){body+=`<tr class="loading-row"><td>${dl}</td><td colspan="${CMP_METRICS.length}" style="color:#e94560">❌ 加载失败</td></tr>`;continue;}const r=findChannelRow(pdata,ch)||{};body+=`<tr><td>${dl}</td>`+CMP_METRICS.map(a=>`<td>${fmtMetric(a[0],r[a[0]],r.cps_fixed)}</td>`).join('')+'</tr>';}return `<div class="cmp-card"><div class="cmp-title">📊 ${title} — 5 日期对比（全指标）</div><div class="cmp-grid"><table class="cmp-tbl"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div></div>`;}
@@ -135,7 +137,7 @@ function render(){const store=ALL[PLATFORM];const d=store['today'];if(d==='loadi
   const others=d.by_channel.filter(r=>!isKey(r.channel));
   const label=PLATFORM==='ios'?'iOS 核心渠道':'三大核心渠道';
   const totalLabel=PLATFORM==='ios'?'🍎 iOS ALL CHANNELS TOTAL':'🔢 ALL CHANNELS TOTAL';
-  const totalRow=`<tr class="r-total clickable" data-ch="__TOTAL__" onclick="toggleCmp(this)"><td>${totalLabel}</td><td>${n(t.clicks)}</td><td>${n(t.installs)}</td><td class="c-cost">${m(t.cost)}</td><td>${n(t.register)}</td><td>${n(t.apply)}</td><td class="c-loan">${n(t.loan)}</td><td>${m(t.revenue)}</td><td>${cpsHtml(t.cps,false)}</td></tr>`;
+  const totalRow=`<tr class="r-total clickable" data-ch="__TOTAL__" onclick="toggleCmp(this)"><td>${totalLabel}</td><td>${n(t.clicks)}</td><td>${n(t.installs)}</td><td class="c-cost">${m(t.cost)}</td><td>${n(t.register)}</td><td>${n(t.apply)}</td><td class="c-loan">${n(t.loan)}</td><td>${m(t.revenue)}</td><td>${avgHtml(t.avg_loan)}</td><td>${roiHtml(t.roi)}</td><td>${cpsHtml(t.cps,false)}</td></tr>`;
   const iosCard=PLATFORM==='ios'?' ios-card':'';
   document.getElementById('main').innerHTML=`
     <div class="cards">
@@ -145,6 +147,8 @@ function render(){const store=ALL[PLATFORM];const d=store['today'];if(d==='loadi
       <div class="card${iosCard}"><div class="lbl">Apply Loan</div><div class="val v-w">${n(t.apply)}</div></div>
       <div class="card${iosCard}"><div class="lbl">Loan Success</div><div class="val v-b">${n(t.loan)}</div></div>
       <div class="card${iosCard}"><div class="lbl">Revenue</div><div class="val v-w">${m(t.revenue)}</div></div>
+      <div class="card${iosCard}"><div class="lbl">件均</div><div class="val v-w">${t.avg_loan?'$'+t.avg_loan.toFixed(2):'—'}</div></div>
+      <div class="card${iosCard}"><div class="lbl">ROI</div><div class="val v-y">${(t.roi!==null&&t.roi!==undefined)?t.roi.toFixed(2)+'x':'—'}</div></div>
       <div class="card${iosCard}"><div class="lbl">CPS</div><div class="val v-y">${t.cps?'$'+t.cps.toFixed(2):'—'}</div></div>
     </div>
     <div class="sec"><span class="dot d-g"></span>全渠道汇总（点击看 5 日对比）</div>

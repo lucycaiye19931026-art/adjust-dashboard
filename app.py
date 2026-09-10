@@ -1079,6 +1079,38 @@ def apply_formula(row):
         row["cps"] = round(cost / loan, 2) if loan > 0 else None
     return row
 
+def _enrich_metrics(obj):
+    """递归为所有数据行补算两个衍生指标（不改动任何既有字段）：
+         avg_loan 件均 = revenue / loan
+         roi            = revenue / cost
+       适用于 total / key_total / by_channel / by_campaign / channel_totals / adgroups
+       各层级；spend 与 cost 两种字段名都支持（adgroup 用 spend）。"""
+    if isinstance(obj, dict):
+        has_loan = ("loan" in obj)
+        has_cost = ("cost" in obj) or ("spend" in obj)
+        if has_loan or has_cost:
+            try:
+                rev  = float(obj.get("revenue") or 0)
+                loan = float(obj.get("loan") or 0)
+                cost = obj.get("cost")
+                if cost is None:
+                    cost = obj.get("spend")
+                cost = float(cost or 0)
+                obj["avg_loan"] = round(rev / loan, 2) if loan > 0 else None
+                obj["roi"]      = round(rev / cost, 4) if cost > 0 else None
+            except Exception:
+                obj.setdefault("avg_loan", None)
+                obj.setdefault("roi", None)
+        for v in obj.values():
+            if isinstance(v, (dict, list)):
+                _enrich_metrics(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            if isinstance(v, (dict, list)):
+                _enrich_metrics(v)
+    return obj
+
+
 def merge_ck(rows):
     CK = ("CK-loan And01", "CK-loan And02", "CK-loan And03")
     merged, others = {}, []
@@ -1276,6 +1308,7 @@ def api_channel():
             "cps":      round(tc/tl, 2) if tl > 0 else None,
         }
 
+        _enrich_metrics(total); _enrich_metrics(rows)
         return jsonify({
             "ok": True, "period": period, "start": start, "end": end,
             "has_day": has_day(period),
@@ -1427,6 +1460,8 @@ def api_campaign():
         except Exception:
             pass
 
+        _enrich_metrics(total); _enrich_metrics(key_total)
+        _enrich_metrics(ch_totals); _enrich_metrics(rows); _enrich_metrics(adgroups)
         return jsonify({
             "ok": True, "period": period, "start": start, "end": end,
             "has_day": has_day(period),
@@ -1514,6 +1549,7 @@ def api_ios_channel():
             "revenue":  round(sum(v.get("revenue",0) for v in seen.values()), 2),
             "cps":      round(tc/tl, 2) if tl > 0 else None,
         }
+        _enrich_metrics(total); _enrich_metrics(rows)
         return jsonify({
             "ok": True, "period": period, "start": start, "end": end,
             "has_day": has_day(period),
@@ -1714,6 +1750,8 @@ def api_ios_campaign():
         except Exception:
             pass
 
+        _enrich_metrics(total); _enrich_metrics(key_total)
+        _enrich_metrics(ch_totals); _enrich_metrics(rows); _enrich_metrics(adgroups)
         return jsonify({
             "ok": True, "period": period, "start": start, "end": end,
             "has_day": has_day(period),

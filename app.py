@@ -44,7 +44,7 @@ TT_BASE         = "https://business-api.tiktok.com/open_api/v1.3"
 
 # ── iOS 专属配置 ──────────────────────────────────────────
 IOS_APP_TOKEN   = os.environ.get("IOS_ADJUST_APP_TOKEN", "du1u32cgaigw")
-IOS_KEY_CH      = ["Facebook", "TikTok for Business", "Apple"]
+IOS_KEY_CH      = ["Google Ads", "Facebook", "TikTok for Business", "Apple"]
 FB_IOS_ACT_IDS  = ["act_826668223504196", "act_485941130935481", "act_1050911951210157", "act_2487386801730510", "act_2547112895720531", "act_1032438845801223"]
 TT_IOS_ADV_ID   = os.environ.get("TT_IOS_ADV_ID", "7358007484973563921")
 
@@ -753,7 +753,8 @@ GG_CLIENT_SECRET   = os.environ.get("GG_CLIENT_SECRET",  "")
 GG_REFRESH_TOKEN   = os.environ.get("GG_REFRESH_TOKEN",  "")
 GG_DEVELOPER_TOKEN = os.environ.get("GG_DEVELOPER_TOKEN","")
 GG_MCC_ID          = os.environ.get("GG_MCC_ID",         "1620959437")
-GG_CUSTOMER_IDS    = ["3375325268", "4223410058"]   # 337-532-5268 + 422-341-0058
+GG_CUSTOMER_IDS    = ["3375325268", "4223410058"]   # Android：337-532-5268 + 422-341-0058
+GG_IOS_CUSTOMER_IDS = ["5716382613"]                # iOS：571-638-2613（与 Android 严格分开，防串端）
 GG_API_VER         = "v24"
 
 _gg_token_cache  = {"token": "", "ts": 0}
@@ -793,7 +794,7 @@ def _gg_date_range(period):
     }
     return ranges.get(period, (td, td))
 
-def _gg_query(query_str):
+def _gg_query(query_str, customer_ids=None):
     """对所有 Customer ID 执行 GAQL 查询，合并返回 results 列表；失败返回 []"""
     token = _gg_get_access_token()
     if not token:
@@ -805,7 +806,7 @@ def _gg_query(query_str):
         "Content-Type":      "application/json",
     }
     all_results = []
-    for cid in GG_CUSTOMER_IDS:
+    for cid in (customer_ids or GG_CUSTOMER_IDS):
         url = f"https://googleads.googleapis.com/{GG_API_VER}/customers/{cid}/googleAds:search"
         try:
             resp = requests.post(url, headers=headers,
@@ -938,6 +939,65 @@ def fetch_gg_adgroup_spend(period):
     _gg_spend_cache["data"][ck] = result
     _gg_spend_cache["ts"] = now
     return result
+
+def _gg_ios_cached(key, fn):
+    import time
+    now = time.time()
+    ck = "gg_ios_" + key
+    hit = _gg_spend_cache["data"].get(ck)
+    if hit is not None and now - _gg_spend_cache.get("ts_" + ck, 0) < 180:
+        return hit
+    val = fn()
+    _gg_spend_cache["data"][ck] = val
+    _gg_spend_cache["ts_" + ck] = now
+    return val
+
+def fetch_gg_ios_spend(period):
+    """iOS Google Ads 渠道总消耗（仅 GG_IOS_CUSTOMER_IDS）"""
+    def _run():
+        since, until = _gg_date_range(period)
+        rows = _gg_query(f"""
+            SELECT metrics.cost_micros FROM campaign
+            WHERE segments.date BETWEEN '{since}' AND '{until}' AND metrics.cost_micros > 0
+        """, GG_IOS_CUSTOMER_IDS)
+        return round(sum(int(r.get("metrics", {}).get("costMicros", 0)) / 1e6 for r in rows), 2)
+    return _gg_ios_cached(f"spend_{period}", _run)
+
+def fetch_gg_ios_campaign_spend(period):
+    """iOS Google Ads Campaign 级消耗 {campaign_name: spend}"""
+    def _run():
+        since, until = _gg_date_range(period)
+        rows = _gg_query(f"""
+            SELECT campaign.name, metrics.cost_micros FROM campaign
+            WHERE segments.date BETWEEN '{since}' AND '{until}' AND metrics.cost_micros > 0
+        """, GG_IOS_CUSTOMER_IDS)
+        out = {}
+        for row in rows:
+            name = row.get("campaign", {}).get("name", "")
+            sp = int(row.get("metrics", {}).get("costMicros", 0)) / 1e6
+            if name:
+                out[name] = round(out.get(name, 0) + sp, 2)
+        return out
+    return _gg_ios_cached(f"camp_{period}", _run)
+
+def fetch_gg_ios_adgroup_spend(period):
+    """iOS Google Ads Adgroup 级消耗 {campaign_name: {adgroup_name: spend}}"""
+    def _run():
+        since, until = _gg_date_range(period)
+        rows = _gg_query(f"""
+            SELECT campaign.name, ad_group.name, metrics.cost_micros FROM ad_group
+            WHERE segments.date BETWEEN '{since}' AND '{until}' AND metrics.cost_micros > 0
+        """, GG_IOS_CUSTOMER_IDS)
+        out = {}
+        for row in rows:
+            c = row.get("campaign", {}).get("name", "")
+            g = (row.get("adGroup") or row.get("ad_group") or {}).get("name", "")
+            sp = int(row.get("metrics", {}).get("costMicros", 0)) / 1e6
+            if c and g and sp > 0:
+                out.setdefault(c, {})
+                out[c][g] = round(out[c].get(g, 0) + sp, 2)
+        return out
+    return _gg_ios_cached(f"ag_{period}", _run)
 
 def fetch_adjust_adgroup(period, channels=None, app_token=None):
     """拉取 Adjust adgroup 级转化数据。
@@ -1148,9 +1208,43 @@ def parse_rows(rows_raw, mode="channel"):
         }
         if mode == "campaign":
             camp_raw = row.get("campaign", "") or ""
-            r["campaign"] = re.sub(r'\s*\(\d+\)\s*$', '', camp_raw).strip()
+            # URL 解码（Adjust 侧可能返回 %20 等编码），再去掉尾部 (数字) 后缀并去空白
+            try:
+                camp_dec = _unquote(camp_raw)
+            except Exception:
+                camp_dec = camp_raw
+            r["campaign"] = re.sub(r'\s*\(\d+\)\s*$', '', camp_dec).strip()
         result.append(r)
     return result
+
+
+def merge_same_campaign(rows):
+    """合并同源 campaign 行（Adjust 有时因名称编码差异把同一 campaign 拆成多行）。
+    按 (channel, campaign, day) 归并，各指标相加，cps 重算。总额不变。"""
+    try:
+        merged = {}
+        order  = []
+        for r in rows:
+            key = (r.get("channel", ""), r.get("campaign", ""), r.get("day"))
+            if key not in merged:
+                merged[key] = dict(r)
+                order.append(key)
+                continue
+            m = merged[key]
+            for f in ("clicks", "installs", "register", "apply", "loan"):
+                m[f] = int(m.get(f) or 0) + int(r.get(f) or 0)
+            for f in ("cost", "revenue"):
+                m[f] = round(float(m.get(f) or 0) + float(r.get(f) or 0), 2)
+        out = []
+        for key in order:
+            m = merged[key]
+            ln = int(m.get("loan") or 0)
+            cs = float(m.get("cost") or 0)
+            m["cps"] = round(cs / ln, 2) if ln > 0 else None
+            out.append(m)
+        return out
+    except Exception:
+        return rows
 
 
 
@@ -1337,6 +1431,7 @@ def api_campaign():
         resp.raise_for_status()
         raw  = resp.json()
         rows = parse_rows(raw.get("rows", []), "campaign")
+        rows = merge_same_campaign(rows)
 
         # 只保留三大核心渠道
         rows = [r for r in rows if r["channel"] in KEY_CH]
@@ -1516,6 +1611,16 @@ def api_ios_channel():
                 r["cps"] = round(tt_ios_spend / loan, 2) if loan > 0 else None
                 r["cps_fixed"] = False
 
+        # ★ 注入 iOS Google Ads 真实消耗（直连 Google Ads API，客户 571-638-2613）
+        gg_ios_spend = fetch_gg_ios_spend(period)
+        for r in rows:
+            if r["channel"] == "Google Ads":
+                r["cost"] = gg_ios_spend
+                r["cost_formula"] = "Google Ads API"
+                loan = r.get("loan") or 0
+                r["cps"] = round(gg_ios_spend / loan, 2) if loan > 0 else None
+                r["cps_fixed"] = False
+
         # ★ 注入 Apple Search Ads 真实消耗（直连 ASA API，替代 Adjust 回传）
         asa_spend = fetch_asa_channel_spend(period)
         if asa_spend > 0:
@@ -1587,6 +1692,17 @@ def _compute_full_ios_channel_total_raw(period):
         if r["channel"] == "TikTok for Business":
             r["cost"] = tt_ios_spend
 
+    gg_ios_spend = fetch_gg_ios_spend(period)
+    for r in rows:
+        if r["channel"] == "Google Ads":
+            r["cost"] = gg_ios_spend
+
+    asa_spend = fetch_asa_channel_spend(period)
+    if asa_spend > 0:
+        for r in rows:
+            if r["channel"] == "Apple":
+                r["cost"] = asa_spend
+
     seen = {}
     for r in rows:
         ch = r["channel"]
@@ -1626,6 +1742,7 @@ def api_ios_campaign():
         resp.raise_for_status()
         raw  = resp.json()
         rows = parse_rows(raw.get("rows", []), "campaign")
+        rows = merge_same_campaign(rows)
 
         # 只保留核心渠道
         rows = [r for r in rows if r["channel"] in IOS_KEY_CH]
@@ -1674,11 +1791,18 @@ def api_ios_campaign():
                         loan = r.get("loan") or 0
                         r["cps"] = round(r["cost"] / loan, 2) if loan > 0 and r["cost"] > 0 else None
 
-        # Google：installs=0 置0，其余保留 Adjust 归因消耗
+        # ★ 注入 iOS Google Ads Campaign 真实消耗（installs=0 置0）
+        gg_ios_camp = fetch_gg_ios_campaign_spend(period)
         for r in rows:
             if r["channel"] == "Google Ads":
                 if (r.get("installs") or 0) == 0:
                     r["cost"] = 0.0; r["cps"] = None
+                else:
+                    _sp, _ok = _pick_spend(r.get("campaign",""), gg_ios_camp)
+                    if _ok:
+                        r["cost"] = _sp
+                        loan = r.get("loan") or 0
+                        r["cps"] = round(r["cost"] / loan, 2) if loan > 0 and r["cost"] > 0 else None
 
         ch_order = {ch: i for i, ch in enumerate(IOS_KEY_CH)}
         rows.sort(key=lambda x: (ch_order.get(x["channel"], 99), -(x.get("cost") or 0)))
@@ -1695,6 +1819,9 @@ def api_ios_campaign():
         fb_ios_ch  = fetch_fb_ios_channel_spend(period)
         tt_ios_ch  = fetch_tt_ios_channel_spend(period)
         asa_ch     = fetch_asa_channel_spend(period)      # ★ ASA 真实消耗
+        gg_ios_ch  = fetch_gg_ios_spend(period)           # ★ iOS Google 真实消耗
+        if "Google Ads" in ch_totals:
+            ch_totals["Google Ads"]["cost"] = gg_ios_ch
         if "Apple" in ch_totals and asa_ch > 0:
             ch_totals["Apple"]["cost"] = asa_ch
         if "Facebook" in ch_totals:
@@ -1730,6 +1857,9 @@ def api_ios_campaign():
             fb_ag = fetch_fb_ios_adgroup_spend(period)
             tt_ag = fetch_tt_ios_adgroup_spend(period)
             asa_ag = fetch_asa_adgroup_spend(period)          # ★ ASA adgroup 细分
+            gg_ios_ag = fetch_gg_ios_adgroup_spend(period)    # ★ iOS Google adgroup 细分
+            gg_ios_spend_camps = {r["campaign"] for r in rows if r["channel"] == "Google Ads" and (r.get("cost") or 0) > 0}
+            gg_ios_ag = {c: ag for c, ag in gg_ios_ag.items() if c in gg_ios_spend_camps}
             # 以 rows 里注入后的真实 cost 为准，只保留 spend>0 的 campaign 展开 adgroup
             fb_spend_camps = {r["campaign"] for r in rows if r["channel"] == "Facebook"            and (r.get("cost") or 0) > 0}
             tt_spend_camps = {r["campaign"] for r in rows if r["channel"] == "TikTok for Business" and (r.get("cost") or 0) > 0}
@@ -1746,6 +1876,7 @@ def api_ios_campaign():
                 "Facebook": _match_adgroup_map(fb_ag, fb_adj_camps, adj_conv.get("Facebook")),
                 "TikTok for Business": _match_adgroup_map(tt_ag, tt_adj_camps, adj_conv.get("TikTok for Business")),
                 "Apple": _match_adgroup_map(asa_ag, asa_adj_camps, adj_conv.get("Apple")),
+                "Google Ads": _match_adgroup_map(gg_ios_ag, list(gg_ios_spend_camps), adj_conv.get("Google Ads")),
             }
         except Exception:
             pass
@@ -1836,6 +1967,8 @@ MEDIA_ACCOUNTS = [
     {"side": "android", "channel": "tiktok", "account_name": None, "account_id": TT_ADV_ID,     "tt_adv": TT_ADV_ID,     "balance_type": "unknown"},
     {"side": "ios",     "channel": "tiktok", "account_name": None, "account_id": TT_IOS_ADV_ID, "tt_adv": TT_IOS_ADV_ID, "balance_type": "unknown"},
     # ---- Apple Search Ads ----
+    {"side": "ios", "channel": "google", "account_name": "飞书-GG-IOS-pesoloan-1010-1",
+     "account_id": "571-638-2613", "gg_customer_id": "5716382613", "balance_type": "limited"},
     {"side": "ios", "channel": "asa", "account_name": "Apple Search Ads", "account_id": "asa-org", "balance_type": "billing"},
 ]
 
@@ -2036,7 +2169,19 @@ def _balance_google(acc):
         url = f"https://googleads.googleapis.com/{GG_API_VER}/customers/{cid}/googleAds:search"
         resp = requests.post(url, headers=headers, json={"query": q}, timeout=15)
         if resp.status_code != 200:
-            row["source_status"] = "error"; row["source_error"] = f"gg http {resp.status_code}"; return row
+            _gerr = ""
+            try:
+                _ej = resp.json()
+                _ej = _ej[0] if isinstance(_ej, list) and _ej else _ej
+                _e = (_ej or {}).get("error", {})
+                _codes = []
+                for _d in _e.get("details", []) or []:
+                    for _x in _d.get("errors", []) or []:
+                        _codes.append("%s:%s" % (list((_x.get("errorCode") or {}).values())[:1], (_x.get("message") or "")[:120]))
+                _gerr = (_e.get("status", "") + " " + " | ".join(_codes))[:300]
+            except Exception:
+                pass
+            row["source_status"] = "error"; row["source_error"] = f"gg http {resp.status_code} {_gerr}".strip(); return row
         results = resp.json().get("results", [])
         if not results:
             row["balance"] = None; row["balance_supported"] = False

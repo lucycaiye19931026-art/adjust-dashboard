@@ -105,7 +105,7 @@ tbody tr.clickable.open td:first-child::before{content:"\25BE ";color:#27ae60}
 </div>
 <main id="main"><div class="loading"><div class="spinner"></div><br>加载中…</div></main>
 <script>
-const IOS_KEY_CH=['Facebook','TikTok for Business','Apple'];
+const IOS_KEY_CH=['Google Ads','Facebook','TikTok for Business','Apple'];
 const DATES=[['today','今日'],['yesterday','昨日'],['3days','近3天'],['7days','近7天'],['month','本月']];
 const CMP_METRICS=[['clicks','Clicks'],['installs','Installs'],['cost','Ad Spend'],['register','Register'],['apply','Apply'],['loan','Loan'],['revenue','Revenue'],['avg_loan','件均'],['roi','ROI'],['cps','CPS']];
 const ALL={};
@@ -129,7 +129,6 @@ function render(){const d=ALL['today'];if(d==='loading'||d===undefined){document
   const totalRow=`<tr class="r-total clickable" data-ch="__TOTAL__" onclick="toggleCmp(this)"><td>🔢 iOS ALL CHANNELS TOTAL</td><td>${n(t.clicks)}</td><td>${n(t.installs)}</td><td class="c-cost">${m(t.cost)}</td><td>${n(t.register)}</td><td>${n(t.apply)}</td><td class="c-loan">${n(t.loan)}</td><td>${m(t.revenue)}</td><td>${avgHtml(t.avg_loan)}</td><td>${roiHtml(t.roi)}</td><td>${cpsHtml(t.cps,false)}</td></tr>`;
   document.getElementById('main').innerHTML=`
     <div class="cards">
-      <div class="card"><div class="lbl">Installs</div><div class="val v-g">${n(t.installs)}</div></div>
       <div class="card"><div class="lbl">Ad Spend</div><div class="val v-r">${m(t.cost)}</div></div>
       <div class="card"><div class="lbl">Register</div><div class="val v-w">${n(t.register)}</div></div>
       <div class="card"><div class="lbl">Apply Loan</div><div class="val v-w">${n(t.apply)}</div></div>

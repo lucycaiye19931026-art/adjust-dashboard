@@ -34,7 +34,7 @@ CPS_FIXED = {
 FB_LONG_TOKEN = os.environ.get("FB_LONG_TOKEN", "")
 FB_APP_ID     = os.environ.get("FB_APP_ID",     "3740970239454882")
 FB_APP_SECRET = os.environ.get("FB_APP_SECRET", "")
-FB_ACT_IDS    = ["act_2043458276522117", "act_1338744840870824", "act_554870820824463", "act_1763443588125609", "act_4425161567801548", "act_3511882642320376", "act_1654205562363513", "act_1054117987058016", "act_1842012880095946", "act_1071912668521082", "act_1016349321026924", "act_893146393853948", "act_1082060041158190", "act_2468093726992507", "act_1554822826379992", "act_1172024374104199"]
+FB_ACT_IDS    = ["act_2043458276522117", "act_1338744840870824", "act_554870820824463", "act_1763443588125609", "act_4425161567801548", "act_3511882642320376", "act_1654205562363513", "act_1054117987058016", "act_1842012880095946", "act_1071912668521082", "act_1016349321026924", "act_893146393853948", "act_1082060041158190", "act_2468093726992507", "act_1554822826379992", "act_1172024374104199", "act_1480326117580059", "act_1461810079456801", "act_1387541973151493"]
 FB_BASE       = "https://graph.facebook.com/v19.0"
 
 # ── TikTok Ads API 配置 ───────────────────────────────────
@@ -1956,6 +1956,9 @@ MEDIA_ACCOUNTS = [
     {"side": "android", "channel": "facebook", "account_name": None, "account_id": "2468093726992507", "fb_act": "act_2468093726992507", "balance_type": "unknown"},
     {"side": "android", "channel": "facebook", "account_name": None, "account_id": "1554822826379992", "fb_act": "act_1554822826379992", "balance_type": "unknown"},
     {"side": "android", "channel": "facebook", "account_name": None, "account_id": "1172024374104199", "fb_act": "act_1172024374104199", "balance_type": "unknown"},
+    {"side": "android", "channel": "facebook", "account_name": "Pesoloan_AN_1016_1", "account_id": "1480326117580059", "fb_act": "act_1480326117580059", "balance_type": "unknown"},
+    {"side": "android", "channel": "facebook", "account_name": "Pesoloan_AN_1016_2", "account_id": "1461810079456801", "fb_act": "act_1461810079456801", "balance_type": "unknown"},
+    {"side": "android", "channel": "facebook", "account_name": "Pesoloan_AN_1016_3", "account_id": "1387541973151493", "fb_act": "act_1387541973151493", "balance_type": "unknown"},
     # ---- Facebook（iOS）----
     {"side": "ios", "channel": "facebook", "account_name": None, "account_id": "826668223504196",  "fb_act": "act_826668223504196",  "balance_type": "unknown"},
     {"side": "ios", "channel": "facebook", "account_name": None, "account_id": "485941130935481",  "fb_act": "act_485941130935481",  "balance_type": "unknown"},

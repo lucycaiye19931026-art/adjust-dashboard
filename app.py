@@ -34,8 +34,35 @@ CPS_FIXED = {
 FB_LONG_TOKEN = os.environ.get("FB_LONG_TOKEN", "")
 FB_APP_ID     = os.environ.get("FB_APP_ID",     "3740970239454882")
 FB_APP_SECRET = os.environ.get("FB_APP_SECRET", "")
-FB_ACT_IDS    = ["act_2043458276522117", "act_1338744840870824", "act_554870820824463", "act_1763443588125609", "act_4425161567801548", "act_3511882642320376", "act_1654205562363513", "act_1054117987058016", "act_1842012880095946", "act_1071912668521082", "act_1016349321026924", "act_893146393853948", "act_1082060041158190", "act_2468093726992507", "act_1554822826379992", "act_1172024374104199", "act_1480326117580059", "act_1461810079456801", "act_1387541973151493"]
 FB_BASE       = "https://graph.facebook.com/v19.0"
+
+
+def _env_act_list(name, default):
+    """从环境变量读取 FB 账户清单（逗号/换行分隔，可带或不带 act_ 前缀）；未配置则用代码默认值"""
+    v = os.environ.get(name, "").strip()
+    if not v:
+        return list(default)
+    out = []
+    for x in v.replace("\n", ",").replace(" ", ",").split(","):
+        x = x.strip()
+        if not x:
+            continue
+        if not x.startswith("act_"):
+            x = "act_" + x
+        if x not in out:
+            out.append(x)
+    return out or list(default)
+
+
+# 2026-11-11 在用账户（用户确认）：安卓 4 个 + iOS 1 个，均为 PHP 结算（按 63.5 折 USD）
+# 运行时会被「自动发现」覆盖（见 _fb_refresh_accounts）；此处为读取失败时的兜底。
+# 若需手动指定：Render 环境变量 FB_ACT_IDS / FB_IOS_ACT_IDS（逗号分隔）
+FB_ACT_IDS = _env_act_list("FB_ACT_IDS", [
+    "act_1659065845628114",   # Pesoloan_local_AN_1027
+    "act_28981743934823453",  # Pesoloan_local_An_1104（原名 IOS_1104，已改名归安卓）
+    "act_994479777044602",    # Pesoloan_local_AN_11/11_01
+    "act_981303295036999",    # Pesoloan_local_AN_11/11_02
+])
 
 # ── TikTok Ads API 配置 ───────────────────────────────────
 TT_ACCESS_TOKEN = os.environ.get("TT_ACCESS_TOKEN", "")
@@ -45,7 +72,9 @@ TT_BASE         = "https://business-api.tiktok.com/open_api/v1.3"
 # ── iOS 专属配置 ──────────────────────────────────────────
 IOS_APP_TOKEN   = os.environ.get("IOS_ADJUST_APP_TOKEN", "du1u32cgaigw")
 IOS_KEY_CH      = ["Google Ads", "Facebook", "TikTok for Business", "Apple"]
-FB_IOS_ACT_IDS  = ["act_826668223504196", "act_485941130935481", "act_1050911951210157", "act_2487386801730510", "act_2547112895720531", "act_1032438845801223"]
+FB_IOS_ACT_IDS = _env_act_list("FB_IOS_ACT_IDS", [
+    "act_2021789685172894",   # Pesoloan_local_IOS_11/11
+])
 TT_IOS_ADV_ID   = os.environ.get("TT_IOS_ADV_ID", "7358007484973563921")
 
 
@@ -535,7 +564,124 @@ def fb_date_range(period):
 from concurrent.futures import ThreadPoolExecutor as _TPE
 
 _fb_unified_cache = {"data": {}, "ts": {}}
+
+
+# ── FB 账户自动发现（2026-11-11）──────────────────────────────────
+# 从 FB Token 读取其有权限的全部广告账户（me/adaccounts），自动纳入本项目账户：
+#   · 账户名含 "peso"（不区分大小写）才纳入；其它业务线/个人号自动排除
+#   · 名称含 "ios" → iOS；其余 → 安卓；历史上名称不含 ios 的 iOS 老户见 _FB_LEGACY_IOS
+#   · Render 配置了 FB_ACT_IDS / FB_IOS_ACT_IDS 时以环境变量为准（手动模式）
+#   · 读取失败时保留当前清单（代码默认 5 个在用户），5 分钟后重试
+_FB_DISCOVER = {"ts": 0.0, "ok": False, "mode": "default", "err": None,
+                "n_android": None, "n_ios": None, "excluded": []}
+_FB_DISCOVER_TTL = 1800
+_FB_LEGACY_IOS = {"485941130935481", "826668223504196", "1050911951210157",
+                  "2487386801730510", "2547112895720531", "1032438845801223"}
+_FB_BLACKLIST = {"3940330966252217"}   # PH-Pesoloan-0109-2：安卓包但用户确认不再使用
+
+
+def _rebuild_media_fb():
+    """余额监控里的 FB 账户跟随最新清单"""
+    ma = globals().get("MEDIA_ACCOUNTS")
+    if ma is None:
+        return
+    keep = [x for x in ma if x.get("channel") != "facebook"]
+    fb = ([{"side": "android", "channel": "facebook", "account_name": None,
+            "account_id": a.replace("act_", ""), "fb_act": a, "balance_type": "unknown"} for a in FB_ACT_IDS]
+          + [{"side": "ios", "channel": "facebook", "account_name": None,
+              "account_id": a.replace("act_", ""), "fb_act": a, "balance_type": "unknown"} for a in FB_IOS_ACT_IDS])
+    ma[:] = keep + fb
+
+
+def _fb_refresh_accounts(force=False):
+    import time as _t
+    if os.environ.get("FB_ACT_IDS", "").strip() or os.environ.get("FB_IOS_ACT_IDS", "").strip():
+        _FB_DISCOVER["mode"] = "env"
+        return
+    now = _t.time()
+    if not force and now - _FB_DISCOVER["ts"] < _FB_DISCOVER_TTL:
+        return
+    _FB_DISCOVER["ts"] = now
+    try:
+        token = get_fb_token()
+        url = f"{FB_BASE}/me/adaccounts"
+        params = {"access_token": token, "fields": "account_id,name,account_status,currency", "limit": 200}
+        accs = []
+        for _ in range(10):
+            r = requests.get(url, params=params, timeout=15)
+            if r.status_code != 200:
+                raise RuntimeError(f"fb http {r.status_code}")
+            j = r.json()
+            accs.extend(j.get("data", []))
+            nxt = (j.get("paging") or {}).get("next")
+            if not nxt:
+                break
+            url, params = nxt, None
+        and_ids, ios_ids, excluded = [], [], []
+        for a in accs:
+            aid = str(a.get("account_id") or str(a.get("id", "")).replace("act_", ""))
+            name = a.get("name") or ""
+            low = name.lower()
+            if not aid or "peso" not in low or aid in _FB_BLACKLIST:
+                excluded.append(name)
+                continue
+            act = "act_" + aid
+            if aid in _FB_LEGACY_IOS or "ios" in low:
+                if act not in ios_ids:
+                    ios_ids.append(act)
+            else:
+                if act not in and_ids:
+                    and_ids.append(act)
+        if not and_ids and not ios_ids:
+            raise RuntimeError("no peso accounts visible")
+        FB_ACT_IDS[:] = and_ids          # 原地更新，所有引用处同步生效
+        FB_IOS_ACT_IDS[:] = ios_ids
+        _rebuild_media_fb()
+        _FB_DISCOVER.update({"ok": True, "mode": "auto", "err": None,
+                             "n_android": len(and_ids), "n_ios": len(ios_ids), "excluded": excluded})
+    except Exception as e:
+        _FB_DISCOVER.update({"ok": False, "err": str(e)[:160]})
+        _FB_DISCOVER["ts"] = now - _FB_DISCOVER_TTL + 300   # 失败 5 分钟后重试
 _FB_CACHE_TTL = 180
+
+
+# ── 币种换算（2026-11-11）：FB 本币户（如 PHP）消耗统一折算为 USD ──
+# 优先级：环境变量 FX_<币种>_PER_USD > 代码固定汇率 _FX_FIXED（PHP=63.5，用户 2026-11-11 指定）> 实时汇率（仅用于未固定的币种）
+_fx_cache = {"rates": None, "ts": 0.0, "src": None}
+_FX_FIXED = {"PHP": 63.5}
+
+def _fx_rate_per_usd(cur):
+    import time as _t
+    cur = (cur or "USD").upper()
+    if cur == "USD":
+        return 1.0
+    env = os.environ.get("FX_" + cur + "_PER_USD", "").strip()
+    if env:
+        try:
+            v = float(env)
+            if v > 0:
+                return v
+        except Exception:
+            pass
+    if cur in _FX_FIXED:
+        return _FX_FIXED[cur]
+    if _fx_cache["rates"] is None or _t.time() - _fx_cache["ts"] > 6 * 3600:
+        try:
+            r = requests.get("https://open.er-api.com/v6/latest/USD", timeout=10)
+            j = r.json()
+            if j.get("result") == "success" and j.get("rates"):
+                _fx_cache.update({"rates": j["rates"], "ts": _t.time(), "src": j.get("time_last_update_utc")})
+        except Exception:
+            pass
+    rates = _fx_cache["rates"] or {}
+    v = rates.get(cur)
+    return float(v) if v else None
+
+def _fx_to_usd(amount, cur):
+    rate = _fx_rate_per_usd(cur)
+    if not rate:
+        return amount
+    return amount / rate
 
 
 def _fb_fetch_one_account(args):
@@ -544,16 +690,41 @@ def _fb_fetch_one_account(args):
     try:
         r = requests.get(f"{FB_BASE}/{act_id}/insights", timeout=15, params={
             "access_token": token,
-            "fields":       "campaign_name,adset_name,spend",
+            "fields":       "campaign_name,adset_name,spend,account_currency",
             "time_range":   _json.dumps({"since": since, "until": until}),
             "level":        "adset",
             "limit":        500,
         })
         if r.status_code == 200:
-            return (act_id, r.json().get("data", []), True)
+            rows = r.json().get("data", [])
+            # 兜底：insights 未返回 account_currency 时，按账户查一次币种（缓存），防止本币户被当成 USD
+            if rows and any(not x.get("account_currency") for x in rows):
+                cur = _fb_account_currency(act_id, token)
+                for x in rows:
+                    if not x.get("account_currency"):
+                        x["account_currency"] = cur
+            return (act_id, rows, True)
         return (act_id, [], False)
     except Exception:
         return (act_id, [], False)
+
+
+_fb_cur_cache = {}
+
+def _fb_account_currency(act_id, token):
+    if act_id in _fb_cur_cache:
+        return _fb_cur_cache[act_id]
+    cur = None
+    try:
+        r = requests.get(f"{FB_BASE}/{act_id}", timeout=10,
+                         params={"access_token": token, "fields": "currency"})
+        if r.status_code == 200:
+            cur = r.json().get("currency")
+    except Exception:
+        pass
+    if cur:
+        _fb_cur_cache[act_id] = cur
+    return cur or "USD"
 
 
 def fb_unified_spend(period, act_ids=None, cache_tag="and"):
@@ -562,6 +733,7 @@ def fb_unified_spend(period, act_ids=None, cache_tag="and"):
     返回 {"total": float, "campaign": {name: spend}, "adgroup": {camp: {adset: spend}}}
     """
     import time as _t
+    _fb_refresh_accounts()
     ids = act_ids if act_ids is not None else FB_ACT_IDS
     since, until = fb_date_range(period)
     ck = f"{cache_tag}:{period}:{since}:{until}"
@@ -585,6 +757,7 @@ def fb_unified_spend(period, act_ids=None, cache_tag="and"):
                     spend = 0.0
                 if spend <= 0:
                     continue
+                spend = _fx_to_usd(spend, row.get("account_currency"))  # 本币户折 USD
                 cname = row.get("campaign_name", "") or ""
                 aname = row.get("adset_name", "") or ""
                 total += spend
@@ -1940,32 +2113,7 @@ MEDIA_ACCOUNTS = [
      "account_id": "337-532-5268", "gg_customer_id": "3375325268", "balance_type": "infinite"},
     # ---- Facebook（Android）----
     # 账户名由 API 实时获取，account_id 用 act_ 去前缀
-    {"side": "android", "channel": "facebook", "account_name": None, "account_id": "2043458276522117", "fb_act": "act_2043458276522117", "balance_type": "unknown"},
-    {"side": "android", "channel": "facebook", "account_name": None, "account_id": "1338744840870824", "fb_act": "act_1338744840870824", "balance_type": "unknown"},
-    {"side": "android", "channel": "facebook", "account_name": None, "account_id": "554870820824463",  "fb_act": "act_554870820824463",  "balance_type": "unknown"},
-    {"side": "android", "channel": "facebook", "account_name": None, "account_id": "1763443588125609", "fb_act": "act_1763443588125609", "balance_type": "unknown"},
-    {"side": "android", "channel": "facebook", "account_name": None, "account_id": "4425161567801548", "fb_act": "act_4425161567801548", "balance_type": "unknown"},
-    {"side": "android", "channel": "facebook", "account_name": None, "account_id": "3511882642320376", "fb_act": "act_3511882642320376", "balance_type": "unknown"},
-    {"side": "android", "channel": "facebook", "account_name": None, "account_id": "1654205562363513", "fb_act": "act_1654205562363513", "balance_type": "unknown"},
-    {"side": "android", "channel": "facebook", "account_name": None, "account_id": "1054117987058016", "fb_act": "act_1054117987058016", "balance_type": "unknown"},
-    {"side": "android", "channel": "facebook", "account_name": None, "account_id": "1842012880095946", "fb_act": "act_1842012880095946", "balance_type": "unknown"},
-    {"side": "android", "channel": "facebook", "account_name": None, "account_id": "1071912668521082", "fb_act": "act_1071912668521082", "balance_type": "unknown"},
-    {"side": "android", "channel": "facebook", "account_name": None, "account_id": "1016349321026924", "fb_act": "act_1016349321026924", "balance_type": "unknown"},
-    {"side": "android", "channel": "facebook", "account_name": None, "account_id": "893146393853948",  "fb_act": "act_893146393853948",  "balance_type": "unknown"},
-    {"side": "android", "channel": "facebook", "account_name": None, "account_id": "1082060041158190", "fb_act": "act_1082060041158190", "balance_type": "unknown"},
-    {"side": "android", "channel": "facebook", "account_name": None, "account_id": "2468093726992507", "fb_act": "act_2468093726992507", "balance_type": "unknown"},
-    {"side": "android", "channel": "facebook", "account_name": None, "account_id": "1554822826379992", "fb_act": "act_1554822826379992", "balance_type": "unknown"},
-    {"side": "android", "channel": "facebook", "account_name": None, "account_id": "1172024374104199", "fb_act": "act_1172024374104199", "balance_type": "unknown"},
-    {"side": "android", "channel": "facebook", "account_name": "Pesoloan_AN_1016_1", "account_id": "1480326117580059", "fb_act": "act_1480326117580059", "balance_type": "unknown"},
-    {"side": "android", "channel": "facebook", "account_name": "Pesoloan_AN_1016_2", "account_id": "1461810079456801", "fb_act": "act_1461810079456801", "balance_type": "unknown"},
-    {"side": "android", "channel": "facebook", "account_name": "Pesoloan_AN_1016_3", "account_id": "1387541973151493", "fb_act": "act_1387541973151493", "balance_type": "unknown"},
     # ---- Facebook（iOS）----
-    {"side": "ios", "channel": "facebook", "account_name": None, "account_id": "826668223504196",  "fb_act": "act_826668223504196",  "balance_type": "unknown"},
-    {"side": "ios", "channel": "facebook", "account_name": None, "account_id": "485941130935481",  "fb_act": "act_485941130935481",  "balance_type": "unknown"},
-    {"side": "ios", "channel": "facebook", "account_name": None, "account_id": "1050911951210157", "fb_act": "act_1050911951210157", "balance_type": "unknown"},
-    {"side": "ios", "channel": "facebook", "account_name": None, "account_id": "2487386801730510", "fb_act": "act_2487386801730510", "balance_type": "unknown"},
-    {"side": "ios", "channel": "facebook", "account_name": None, "account_id": "2547112895720531", "fb_act": "act_2547112895720531", "balance_type": "unknown"},
-    {"side": "ios", "channel": "facebook", "account_name": None, "account_id": "1032438845801223", "fb_act": "act_1032438845801223", "balance_type": "unknown"},
     # ---- TikTok（Android / iOS）----
     {"side": "android", "channel": "tiktok", "account_name": None, "account_id": TT_ADV_ID,     "tt_adv": TT_ADV_ID,     "balance_type": "unknown"},
     {"side": "ios",     "channel": "tiktok", "account_name": None, "account_id": TT_IOS_ADV_ID, "tt_adv": TT_IOS_ADV_ID, "balance_type": "unknown"},
@@ -1973,6 +2121,14 @@ MEDIA_ACCOUNTS = [
     {"side": "ios", "channel": "google", "account_name": "飞书-GG-IOS-pesoloan-1010-1",
      "account_id": "571-638-2613", "gg_customer_id": "5716382613", "balance_type": "limited"},
     {"side": "ios", "channel": "asa", "account_name": "Apple Search Ads", "account_id": "asa-org", "balance_type": "billing"},
+]
+# FB 账户跟随 FB_ACT_IDS / FB_IOS_ACT_IDS 自动生成（环境变量换户后余额监控同步生效）
+MEDIA_ACCOUNTS += [
+    {"side": "android", "channel": "facebook", "account_name": None,
+     "account_id": a.replace("act_", ""), "fb_act": a, "balance_type": "unknown"} for a in FB_ACT_IDS
+] + [
+    {"side": "ios", "channel": "facebook", "account_name": None,
+     "account_id": a.replace("act_", ""), "fb_act": a, "balance_type": "unknown"} for a in FB_IOS_ACT_IDS
 ]
 
 _proxy_cache = {"balances": None, "balances_ts": 0}
@@ -2215,6 +2371,7 @@ def _balance_asa(acc):
 
 
 def _collect_balances():
+    _fb_refresh_accounts()
     out = []
     for acc in MEDIA_ACCOUNTS:
         ch = acc.get("channel")
@@ -2333,6 +2490,7 @@ def _fetch_rejected_ads(act_id, side):
 
 
 def _collect_rejected():
+    _fb_refresh_accounts()
     accounts = []
     total_rejected = 0
     for act_id in FB_ACT_IDS:
@@ -2390,10 +2548,12 @@ def internal_media_fb_accounts():
     auth = _require_api_key()
     if auth:
         return auth
+    _fb_refresh_accounts(force=True)
     token  = get_fb_token()
     since, until = fb_date_range("today")
     configured = set(FB_ACT_IDS) | set(FB_IOS_ACT_IDS)
     out = {"since": since, "until": until,
+           "discovery": {k: v for k, v in _FB_DISCOVER.items() if k != "ts"},
            "configured_android": len(FB_ACT_IDS),
            "configured_ios": len(FB_IOS_ACT_IDS),
            "configured_count": len(configured),
